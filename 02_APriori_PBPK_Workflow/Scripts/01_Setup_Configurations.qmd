@@ -1,0 +1,689 @@
+---
+title: "Step 1: Build a priori PBPK simulation configurations"
+author: "NAMLink"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+editor: source
+---
+
+<style>
+.cell-output-display { overflow-x: auto; }
+table { font-size: 0.92rem; }
+img { max-width: 100%; height: auto; }
+</style>
+
+# Purpose
+
+This tutorial script converts prepared inputs into the Excel configuration files used
+by `esqlabsR`. It begins with species- and target-specific PKML files that have
+already been exported from PK-Sim/MoBi. 
+
+The concentration measurements are **not** used to fit or calibrate the PBPK
+models. In this retrospective example, the formatted datasets provide the
+molecule-dose combinations, administration durations, and molecular weights
+needed to reproduce the evaluation. Model parameters should come from the drug- and 
+target-specific in vitro experiments. In this retrospective example, the parameters 
+were obtained from literature.
+
+## Inputs and outputs
+
+Inputs:
+
+- `00_Data/Monkey/mAb_data_clean.csv`
+- `00_Data/Human/mAb_data_human.csv`
+- `00_Data/Monkey/Parameters.xlsx`
+- `00_Data/Human/Parameters_human.xlsx`
+- target- and species-specific PKML files under `01_Models/`
+- `02_APriori_PBPK_Workflow/ProjectConfiguration.xlsx`
+
+Outputs:
+
+- `Configurations/Applications.xlsx`
+- `Configurations/ModelParameters.xlsx`
+- `Configurations/Scenarios.xlsx`
+- an updated `ProjectConfiguration.xlsx` with paths matching this repository
+
+Re-running this script deliberately replaces those generated configuration
+files. Close them in Excel before running the code.
+
+# 1. Set up portable project paths
+
+The tutorial does not use `setwd()` or a user-specific absolute path. The first
+function walks upward from the current R working directory until it finds the
+three expected project folders.
+
+```{r}
+#| label: setup
+
+find_project_root_bootstrap <- function(start = getwd()) {
+  current <- normalizePath(start, winslash = "/", mustWork = TRUE)
+  repeat {
+    required <- file.path(
+      current,
+      c("00_Data", "01_Models", "02_APriori_PBPK_Workflow")
+    )
+    if (all(dir.exists(required))) return(current)
+    parent <- dirname(current)
+    if (identical(parent, current)) stop("Project root not found.")
+    current <- parent
+  }
+}
+
+PROJECT_ROOT <- find_project_root_bootstrap()
+WORKFLOW_DIR <- file.path(PROJECT_ROOT, "02_APriori_PBPK_Workflow")
+DATA_DIR <- file.path(PROJECT_ROOT, "00_Data")
+MODEL_DIR <- file.path(PROJECT_ROOT, "01_Models")
+CONFIG_DIR <- file.path(WORKFLOW_DIR, "Configurations")
+PROJECT_CONFIG_FILE <- file.path(WORKFLOW_DIR, "ProjectConfiguration.xlsx")
+
+# Keep the tutorial independently runnable by defining its small validation
+# helpers here rather than sourcing a project-specific R file.
+check_package_versions <- function(required) {
+  installed <- vapply(
+    names(required), requireNamespace, quietly = TRUE,
+    FUN.VALUE = logical(1)
+  )
+  if (any(!installed)) {
+    stop(
+      "Install the following R package(s) before continuing: ",
+      paste(names(required)[!installed], collapse = ", ")
+    )
+  }
+  versions <- vapply(
+    names(required),
+    function(package) as.character(utils::packageVersion(package)),
+    FUN.VALUE = character(1)
+  )
+  too_old <- vapply(
+    names(required),
+    function(package) {
+      utils::compareVersion(versions[[package]], required[[package]]) < 0
+    },
+    FUN.VALUE = logical(1)
+  )
+  if (any(too_old)) {
+    stop(
+      "Package version requirement not met: ",
+      paste0(
+        names(required)[too_old], " >= ", required[too_old],
+        " (installed: ", versions[too_old], ")",
+        collapse = "; "
+      )
+    )
+  }
+  data.frame(
+    Package = names(versions), Installed = unname(versions),
+    Minimum = unname(required), row.names = NULL, check.names = FALSE
+  )
+}
+
+assert_files_exist <- function(paths, description = "Required input") {
+  missing <- paths[!file.exists(paths)]
+  if (length(missing) > 0L) {
+    stop(
+      description, " file(s) not found:\n- ",
+      paste(
+        normalizePath(missing, winslash = "/", mustWork = FALSE),
+        collapse = "\n- "
+      )
+    )
+  }
+  invisible(paths)
+}
+
+read_parameter_source <- function(path) {
+  assert_files_exist(path, "Parameter source")
+  x <- openxlsx::read.xlsx(path, sheet = 1, check.names = FALSE)
+  if (ncol(x) < 7L) stop("Expected at least seven columns in ", path)
+  names(x)[seq_len(7)] <- c(
+    "Drug.Name", "Target.Name", "Parameter.Name", "Value", "Unit",
+    "Source", "Method"
+  )
+  x |>
+    dplyr::transmute(
+      Drug.Name = trimws(as.character(.data$Drug.Name)),
+      Target.Name = trimws(as.character(.data$Target.Name)),
+      Parameter.Name = trimws(as.character(.data$Parameter.Name)),
+      Value = as.numeric(.data$Value),
+      Unit = trimws(as.character(.data$Unit)),
+      Source = as.character(.data$Source),
+      Method = as.character(.data$Method)
+    ) |>
+    dplyr::filter(.data$Drug.Name != "", .data$Parameter.Name != "")
+}
+
+required_versions <- c(
+  dplyr = "1.1.0",
+  purrr = "1.0.0",
+  stringr = "1.5.0",
+  tibble = "3.2.0",
+  tidyr = "1.3.0",
+  openxlsx = "4.2.5",
+  knitr = "1.40"
+)
+package_versions <- check_package_versions(required_versions)
+
+library(dplyr)
+library(purrr)
+library(stringr)
+library(tibble)
+library(openxlsx)
+library(knitr)
+
+dir.create(CONFIG_DIR, recursive = TRUE, showWarnings = FALSE)
+
+input_files <- c(
+  file.path(DATA_DIR, "Monkey", "mAb_data_clean.csv"),
+  file.path(DATA_DIR, "Human", "mAb_data_human.csv"),
+  file.path(DATA_DIR, "Monkey", "Parameters.xlsx"),
+  file.path(DATA_DIR, "Human", "Parameters_human.xlsx"),
+  PROJECT_CONFIG_FILE
+)
+assert_files_exist(input_files)
+
+package_versions |>
+  knitr::kable(caption = "R package versions used to build the configurations")
+```
+
+# 2. Read the prepared data and define administration durations
+
+Only IV records are included because the supplied PKML simulations represent IV
+administration. The route labels determine infusion duration. A route that
+cannot be resolved causes an error instead of receiving a silent default.
+
+The following rules implement the study durations used in this tutorial:
+
+- monkey IV and IV-bolus records: 1-minute bolus approximation;
+- adalimumab human IV infusion: 30 minutes;
+- pembrolizumab human IV infusion: 30 minutes;
+- human 1-hour and 2-hour infusion labels: 60 and 120 minutes, respectively.
+
+```{r}
+#| label: define-scenarios
+
+read_formatted_pk <- function(path, species_label) {
+  utils::read.csv(
+    path,
+    stringsAsFactors = FALSE,
+    check.names = FALSE,
+    fileEncoding = "UTF-8-BOM",
+    na.strings = c("", "NA")
+  ) |>
+    mutate(
+      Species = species_label,
+      Molecule = trimws(as.character(.data$Molecule)),
+      Dose = as.numeric(.data$Dose),
+      Route = trimws(as.character(.data$Route))
+    ) |>
+    filter(grepl("^IV", .data$Route, ignore.case = TRUE)) |>
+    transmute(.data$Species, .data$Molecule, .data$Dose, .data$Route)
+}
+
+monkey_data <- read_formatted_pk(
+  file.path(DATA_DIR, "Monkey", "mAb_data_clean.csv"),
+  "Monkey"
+)
+human_data <- read_formatted_pk(
+  file.path(DATA_DIR, "Human", "mAb_data_human.csv"),
+  "Human"
+)
+
+resolve_infusion_minutes <- function(species, molecule, route) {
+  route_clean <- tolower(gsub("\\s+", " ", trimws(route)))
+  case_when(
+    species == "Monkey" & grepl("^iv", route_clean) ~ 1,
+    species == "Human" & molecule == "Adalimumab" ~ 30,
+    species == "Human" & grepl("30\\s*min", route_clean) ~ 30,
+    species == "Human" & grepl("1\\s*hr|1\\s*hour", route_clean) ~ 60,
+    species == "Human" & grepl("2\\s*hr|2\\s*hour", route_clean) ~ 120,
+    TRUE ~ NA_real_
+  )
+}
+
+scenario_source <- bind_rows(monkey_data, human_data) |>
+  distinct(.data$Species, .data$Molecule, .data$Dose, .data$Route) |>
+  mutate(
+    Infusion_min = resolve_infusion_minutes(
+      .data$Species, .data$Molecule, .data$Route
+    )
+  )
+
+unresolved_routes <- scenario_source |>
+  filter(!is.finite(.data$Infusion_min))
+if (nrow(unresolved_routes) > 0L) {
+  stop(
+    "Infusion duration is unresolved for: ",
+    paste(
+      paste0(
+        unresolved_routes$Species, "/", unresolved_routes$Molecule,
+        " [", unresolved_routes$Route, "]"
+      ),
+      collapse = "; "
+    )
+  )
+}
+
+scenario_source <- scenario_source |>
+  group_by(.data$Species, .data$Molecule, .data$Dose) |>
+  summarise(
+    Route = paste(sort(unique(.data$Route)), collapse = "; "),
+    Infusion_min = {
+      durations <- unique(.data$Infusion_min)
+      if (length(durations) != 1L) {
+        stop("More than one infusion duration found for a scenario.")
+      }
+      durations
+    },
+    .groups = "drop"
+  ) |>
+  arrange(.data$Molecule, .data$Species, .data$Dose)
+
+scenario_source |>
+  count(.data$Species, .data$Infusion_min, name = "Scenarios") |>
+  arrange(.data$Species, .data$Infusion_min) |>
+  knitr::kable(
+    caption = "Configured IV administration durations",
+    col.names = c("Species", "Infusion duration (min)", "Scenarios")
+  )
+```
+
+# 3. Map molecules to PKML files and validate the model inputs
+
+Each PKML file contains the generic large-molecule PBPK model plus one target
+expression profile for one species. Molecules are mapped to a PKML file through
+their target. The model path stored in `Scenarios.xlsx` is relative to
+`01_Models/`.
+
+```{r}
+#| label: map-models-and-parameters
+
+monkey_parameters <- read_parameter_source(
+  file.path(DATA_DIR, "Monkey", "Parameters.xlsx")
+)
+human_parameters <- read_parameter_source(
+  file.path(DATA_DIR, "Human", "Parameters_human.xlsx")
+)
+
+target_model_files <- tribble(
+  ~Species, ~Target.Name, ~ModelFile,
+  "Monkey", "PD-L1", "PKML_Files_Monkey/PKML_Files_Monkey/AntiPDL1.pkml",
+  "Monkey", "PD-1",  "PKML_Files_Monkey/PKML_Files_Monkey/AntiPD1.pkml",
+  "Monkey", "VEGFA", "PKML_Files_Monkey/PKML_Files_Monkey/AntiVEGFA.pkml",
+  "Monkey", "IL-6R", "PKML_Files_Monkey/PKML_Files_Monkey/AntiIL6R.pkml",
+  "Monkey", "TNFA",  "PKML_Files_Monkey/PKML_Files_Monkey/AntiTNFA.pkml",
+  "Human", "PD-L1", "PKML_Files_Human/PKML_Files_Human/AntiPDL1.pkml",
+  "Human", "PD-1",  "PKML_Files_Human/PKML_Files_Human/AntiPD1.pkml",
+  "Human", "VEGFA", "PKML_Files_Human/PKML_Files_Human/AntiVEGFA.pkml",
+  "Human", "IL-6R", "PKML_Files_Human/PKML_Files_Human/AntiIL6R.pkml",
+  "Human", "TNFA",  "PKML_Files_Human/PKML_Files_Human/AntiTNFA.pkml"
+)
+
+drug_target <- bind_rows(
+  monkey_parameters |> distinct(.data$Drug.Name, .data$Target.Name) |>
+    mutate(Species = "Monkey"),
+  human_parameters |> distinct(.data$Drug.Name, .data$Target.Name) |>
+    mutate(Species = "Human")
+) |>
+  rename(Molecule = .data$Drug.Name) |>
+  left_join(target_model_files, by = c("Species", "Target.Name"))
+
+scenarios <- scenario_source |>
+  left_join(
+    drug_target |>
+      select(.data$Species, .data$Molecule, .data$Target.Name, .data$ModelFile),
+    by = c("Species", "Molecule")
+  ) |>
+  mutate(
+    Scenario = paste(.data$Molecule, .data$Species, .data$Dose, "mpk", sep = "_")
+  ) |>
+  arrange(.data$Molecule, .data$Species, .data$Dose)
+
+if (anyNA(scenarios$ModelFile)) {
+  stop(
+    "No PKML mapping found for: ",
+    paste(unique(scenarios$Molecule[is.na(scenarios$ModelFile)]), collapse = ", ")
+  )
+}
+
+model_paths <- file.path(MODEL_DIR, scenarios$ModelFile)
+assert_files_exist(model_paths, "Mapped PKML model")
+
+required_parameter_names <- c(
+  "Kd (FcRn) in endosomal space", "Kd", "koff", "kint", "kdeg",
+  "Reference concentration"
+)
+
+parameter_coverage <- bind_rows(
+  monkey_parameters |> mutate(Species = "Monkey"),
+  human_parameters |> mutate(Species = "Human")
+) |>
+  filter(.data$Parameter.Name %in% required_parameter_names) |>
+  count(.data$Species, .data$Drug.Name, .data$Parameter.Name) |>
+  tidyr::complete(
+    tidyr::nesting(Species, Drug.Name),
+    Parameter.Name = required_parameter_names,
+    fill = list(n = 0L)
+  )
+
+bad_parameter_coverage <- parameter_coverage |>
+  filter(.data$n != 1L)
+if (nrow(bad_parameter_coverage) > 0L) {
+  stop(
+    "Every molecule/species must have exactly one value for each required ",
+    "parameter. Review: ",
+    paste(
+      paste0(
+        bad_parameter_coverage$Species, "/",
+        bad_parameter_coverage$Drug.Name, "/",
+        bad_parameter_coverage$Parameter.Name, " (n=",
+        bad_parameter_coverage$n, ")"
+      ),
+      collapse = "; "
+    )
+  )
+}
+
+scenarios |>
+  select(
+    .data$Scenario, .data$Target.Name, .data$Route,
+    .data$Infusion_min, .data$ModelFile
+  ) |>
+  knitr::kable(caption = "Validated simulation scenarios")
+```
+
+# 4. Write the esqlabsR configuration workbooks
+
+The helper below writes to a temporary file and then replaces the target. If a
+target workbook is open in Excel, the copy step fails with an explicit message.
+
+The simulation grid requests one value every 5 minutes for the first 12 hours
+and one value every 6 hours thereafter through day 28. In the esqlabsR triplet
+format, resolution is the number of output points per time unit; therefore
+`0.1666667` points/hour corresponds to one output every 6 hours.
+
+```{r}
+#| label: write-configurations
+
+safe_save_workbook <- function(workbook, target) {
+  temp_file <- tempfile(
+    pattern = "esqlabsR_",
+    tmpdir = dirname(target),
+    fileext = ".xlsx"
+  )
+  on.exit(unlink(temp_file), add = TRUE)
+  openxlsx::saveWorkbook(workbook, temp_file, overwrite = TRUE)
+  copied <- file.copy(temp_file, target, overwrite = TRUE)
+  if (!copied) {
+    stop("Could not replace ", target, ". Close the workbook in Excel and retry.")
+  }
+  invisible(target)
+}
+
+# Applications.xlsx -----------------------------------------------------------
+application_container <-
+  "Events|IV_Bolus|Application_1|ProtocolSchemaItem"
+applications_wb <- createWorkbook()
+
+for (i in seq_len(nrow(scenarios))) {
+  scenario <- scenarios[i, ]
+  application <- data.frame(
+    `Container Path` = application_container,
+    `Parameter Name` = "DosePerBodyWeight",
+    Value = scenario$Dose,
+    Units = "mg/kg",
+    `Infusion time` = scenario$Infusion_min,
+    `Infusion time unit` = "min",
+    check.names = FALSE
+  )
+  addWorksheet(applications_wb, scenario$Scenario)
+  writeData(applications_wb, scenario$Scenario, application)
+  setColWidths(
+    applications_wb, scenario$Scenario, cols = 1:6,
+    widths = c(55, 22, 10, 10, 16, 20)
+  )
+}
+safe_save_workbook(
+  applications_wb,
+  file.path(CONFIG_DIR, "Applications.xlsx")
+)
+
+# ModelParameters.xlsx --------------------------------------------------------
+container_map <- c(
+  "Kd (FcRn) in endosomal space" = "mAb",
+  "Kd" = "mAb-Target-InVitro",
+  "koff" = "mAb-Target-InVitro",
+  "kint" = "Complex Internalization",
+  "kdeg" = "Target degradation",
+  "Reference concentration" = "Target"
+)
+unit_map <- c(
+  "Kd (FcRn) in endosomal space" = "\u00B5mol/l",
+  "Kd" = "\u00B5mol/l",
+  "koff" = "1/min",
+  "kint" = "1/h",
+  "kdeg" = "1/h",
+  "Reference concentration" = "nmol/l"
+)
+
+model_parameters_wb <- createWorkbook()
+addWorksheet(model_parameters_wb, "Global")
+writeData(
+  model_parameters_wb,
+  "Global",
+  data.frame(
+    `Container Path` = NA_character_,
+    `Parameter Name` = NA_character_,
+    Value = NA_real_,
+    Units = NA_character_,
+    check.names = FALSE
+  )
+)
+
+molecule_species <- scenarios |>
+  distinct(.data$Molecule, .data$Species)
+
+for (i in seq_len(nrow(molecule_species))) {
+  molecule <- molecule_species$Molecule[i]
+  species <- molecule_species$Species[i]
+  source_parameters <- if (species == "Human") {
+    human_parameters
+  } else {
+    monkey_parameters
+  }
+
+  parameter_sheet <- source_parameters |>
+    filter(
+      .data$Drug.Name == molecule,
+      .data$Parameter.Name %in% required_parameter_names
+    ) |>
+    mutate(
+      Parameter_order = match(.data$Parameter.Name, required_parameter_names)
+    ) |>
+    arrange(.data$Parameter_order) |>
+    transmute(
+      `Container Path` = unname(container_map[.data$Parameter.Name]),
+      `Parameter Name` = .data$Parameter.Name,
+      Value = .data$Value,
+      Units = unname(unit_map[.data$Parameter.Name])
+    )
+
+  sheet_name <- paste(molecule, species, sep = "_")
+  addWorksheet(model_parameters_wb, sheet_name)
+  writeData(model_parameters_wb, sheet_name, parameter_sheet)
+  setColWidths(
+    model_parameters_wb, sheet_name, cols = 1:4,
+    widths = c(30, 34, 14, 12)
+  )
+}
+safe_save_workbook(
+  model_parameters_wb,
+  file.path(CONFIG_DIR, "ModelParameters.xlsx")
+)
+
+# Scenarios.xlsx --------------------------------------------------------------
+simulation_time <- "0, 12, 12; 12, 672, 0.1666667"
+scenario_sheet <- scenarios |>
+  transmute(
+    Scenario_name = .data$Scenario,
+    IndividualId = NA_character_,
+    PopulationId = NA_character_,
+    ReadPopulationFromCSV = NA_character_,
+    ModelParameterSheets = paste0(
+      '"Global", "', .data$Molecule, "_", .data$Species, '"'
+    ),
+    ApplicationProtocol = .data$Scenario,
+    SimulationTime = simulation_time,
+    SimulationTimeUnit = "h",
+    SteadyState = NA_character_,
+    SteadyStateTime = NA_character_,
+    SteadyStateTimeUnit = NA_character_,
+    ModelFile = .data$ModelFile,
+    OutputPathsIds = "PVB"
+  )
+
+output_paths <- data.frame(
+  OutputPathId = "PVB",
+  OutputPath = paste0(
+    "Organism|PeripheralVenousBlood|mAb|",
+    "Plasma (Peripheral Venous Blood)"
+  ),
+  check.names = FALSE
+)
+
+scenarios_wb <- createWorkbook()
+addWorksheet(scenarios_wb, "Scenarios")
+writeData(scenarios_wb, "Scenarios", scenario_sheet)
+setColWidths(scenarios_wb, "Scenarios", cols = 1:13, widths = "auto")
+addWorksheet(scenarios_wb, "OutputPaths")
+writeData(scenarios_wb, "OutputPaths", output_paths)
+setColWidths(scenarios_wb, "OutputPaths", cols = 1:2, widths = c(18, 75))
+safe_save_workbook(
+  scenarios_wb,
+  file.path(CONFIG_DIR, "Scenarios.xlsx")
+)
+
+# Update only the repository-relative paths in ProjectConfiguration.xlsx. -----
+project_configuration <- openxlsx::read.xlsx(
+  PROJECT_CONFIG_FILE,
+  sheet = 1,
+  check.names = FALSE
+)
+project_configuration_wb <- openxlsx::loadWorkbook(PROJECT_CONFIG_FILE)
+path_updates <- c(
+  modelFolder = "../01_Models/",
+  configurationsFolder = "Configurations/",
+  outputFolder = "SimsOutputs/"
+)
+for (property in names(path_updates)) {
+  row_index <- match(property, project_configuration$Property)
+  if (is.na(row_index)) {
+    stop("ProjectConfiguration.xlsx is missing property: ", property)
+  }
+  writeData(
+    project_configuration_wb,
+    sheet = 1,
+    x = unname(path_updates[[property]]),
+    startCol = 2,
+    startRow = row_index + 1L,
+    colNames = FALSE
+  )
+}
+safe_save_workbook(project_configuration_wb, PROJECT_CONFIG_FILE)
+```
+
+# 5. Verify what was written
+
+This final check reopens the generated files. It verifies file existence, sheet
+counts, scenario names, mapped model files, and administration durations before
+any simulation is started.
+
+```{r}
+#| label: verify-configurations
+
+configuration_files <- file.path(
+  CONFIG_DIR,
+  c("Applications.xlsx", "ModelParameters.xlsx", "Scenarios.xlsx")
+)
+assert_files_exist(configuration_files, "Generated configuration")
+
+written_scenarios <- openxlsx::read.xlsx(
+  file.path(CONFIG_DIR, "Scenarios.xlsx"),
+  sheet = "Scenarios",
+  check.names = FALSE
+)
+
+application_sheets <- openxlsx::getSheetNames(
+  file.path(CONFIG_DIR, "Applications.xlsx")
+)
+parameter_sheets <- openxlsx::getSheetNames(
+  file.path(CONFIG_DIR, "ModelParameters.xlsx")
+)
+
+written_infusion_minutes <- purrr::map_dbl(application_sheets, function(sheet) {
+  application <- openxlsx::read.xlsx(
+    file.path(CONFIG_DIR, "Applications.xlsx"),
+    sheet = sheet,
+    check.names = FALSE
+  )
+  normalized_names <- tolower(gsub("[.]", " ", names(application)))
+  infusion_column <- names(application)[normalized_names == "infusion time"]
+  if (length(infusion_column) != 1L || nrow(application) != 1L) {
+    stop("Could not verify a unique infusion time in sheet ", sheet, ".")
+  }
+  as.numeric(application[[infusion_column]][[1]])
+})
+names(written_infusion_minutes) <- application_sheets
+
+if (!setequal(written_scenarios$Scenario_name, scenarios$Scenario)) {
+  stop("Scenario names changed while writing Scenarios.xlsx.")
+}
+if (!setequal(application_sheets, scenarios$Scenario)) {
+  stop("Applications.xlsx does not contain exactly one sheet per scenario.")
+}
+if (length(parameter_sheets) != nrow(molecule_species) + 1L) {
+  stop("ModelParameters.xlsx has an unexpected number of sheets.")
+}
+expected_infusion_minutes <- setNames(
+  scenarios$Infusion_min,
+  scenarios$Scenario
+)
+if (!isTRUE(all.equal(
+  written_infusion_minutes[names(expected_infusion_minutes)],
+  expected_infusion_minutes,
+  check.attributes = FALSE
+))) {
+  stop("An administration duration changed while writing Applications.xlsx.")
+}
+
+verification <- tibble(
+  Check = c(
+    "Monkey scenarios", "Human scenarios", "Application sheets",
+    "Molecule-species parameter sheets", "Mapped PKML files"
+  ),
+  Result = c(
+    sum(scenarios$Species == "Monkey"),
+    sum(scenarios$Species == "Human"),
+    length(application_sheets),
+    length(parameter_sheets) - 1L,
+    sum(file.exists(model_paths))
+  )
+)
+
+verification |>
+  knitr::kable(caption = "Configuration verification summary")
+```
+
+# What to inspect before continuing
+
+Open one monkey and one human sheet in `Applications.xlsx` and confirm the dose
+and administration duration. Then inspect one molecule/species sheet in
+`ModelParameters.xlsx` and confirm that the six a priori parameters, units, and
+container paths match the corresponding PKML model. After those checks, continue
+to `02_Run_Sims.qmd`.

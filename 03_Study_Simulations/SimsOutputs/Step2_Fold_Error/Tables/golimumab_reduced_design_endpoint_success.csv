@@ -1,0 +1,55 @@
+Molecule,Variability_CV,Design,N_per_group,Total_animals,Endpoint,Fraction_within_2fold
+Golimumab,0.3,2 dose groups,2,4,AUC0-28d,0.991
+Golimumab,0.3,2 dose groups,2,4,Cmax,1
+Golimumab,0.3,2 dose groups,2,4,Terminal clearance,1
+Golimumab,0.3,2 dose groups,3,6,AUC0-28d,0.997
+Golimumab,0.3,2 dose groups,3,6,Cmax,1
+Golimumab,0.3,2 dose groups,3,6,Terminal clearance,1
+Golimumab,0.3,2 dose groups,6,12,AUC0-28d,1
+Golimumab,0.3,2 dose groups,6,12,Cmax,1
+Golimumab,0.3,2 dose groups,6,12,Terminal clearance,1
+Golimumab,0.3,3 dose groups,2,6,AUC0-28d,0.984
+Golimumab,0.3,3 dose groups,2,6,Cmax,1
+Golimumab,0.3,3 dose groups,2,6,Terminal clearance,1
+Golimumab,0.3,3 dose groups,3,9,AUC0-28d,0.998
+Golimumab,0.3,3 dose groups,3,9,Cmax,1
+Golimumab,0.3,3 dose groups,3,9,Terminal clearance,1
+Golimumab,0.3,3 dose groups,6,18,AUC0-28d,1
+Golimumab,0.3,3 dose groups,6,18,Cmax,1
+Golimumab,0.3,3 dose groups,6,18,Terminal clearance,1
+Golimumab,0.3,5 dose groups,2,10,AUC0-28d,0.97
+Golimumab,0.3,5 dose groups,2,10,Cmax,1
+Golimumab,0.3,5 dose groups,2,10,Terminal clearance,1
+Golimumab,0.3,5 dose groups,3,15,AUC0-28d,0.997
+Golimumab,0.3,5 dose groups,3,15,Cmax,1
+Golimumab,0.3,5 dose groups,3,15,Terminal clearance,1
+Golimumab,0.3,5 dose groups,6,30,AUC0-28d,1
+Golimumab,0.3,5 dose groups,6,30,Cmax,1
+Golimumab,0.3,5 dose groups,6,30,Terminal clearance,1
+Golimumab,0.5,2 dose groups,2,4,AUC0-28d,0.972
+Golimumab,0.5,2 dose groups,2,4,Cmax,1
+Golimumab,0.5,2 dose groups,2,4,Terminal clearance,0.965
+Golimumab,0.5,2 dose groups,3,6,AUC0-28d,0.995
+Golimumab,0.5,2 dose groups,3,6,Cmax,1
+Golimumab,0.5,2 dose groups,3,6,Terminal clearance,0.98
+Golimumab,0.5,2 dose groups,6,12,AUC0-28d,1
+Golimumab,0.5,2 dose groups,6,12,Cmax,1
+Golimumab,0.5,2 dose groups,6,12,Terminal clearance,1
+Golimumab,0.5,3 dose groups,2,6,AUC0-28d,0.947
+Golimumab,0.5,3 dose groups,2,6,Cmax,1
+Golimumab,0.5,3 dose groups,2,6,Terminal clearance,0.932
+Golimumab,0.5,3 dose groups,3,9,AUC0-28d,0.99
+Golimumab,0.5,3 dose groups,3,9,Cmax,1
+Golimumab,0.5,3 dose groups,3,9,Terminal clearance,0.978
+Golimumab,0.5,3 dose groups,6,18,AUC0-28d,0.999
+Golimumab,0.5,3 dose groups,6,18,Cmax,1
+Golimumab,0.5,3 dose groups,6,18,Terminal clearance,0.999
+Golimumab,0.5,5 dose groups,2,10,AUC0-28d,0.903
+Golimumab,0.5,5 dose groups,2,10,Cmax,1
+Golimumab,0.5,5 dose groups,2,10,Terminal clearance,0.848
+Golimumab,0.5,5 dose groups,3,15,AUC0-28d,0.985
+Golimumab,0.5,5 dose groups,3,15,Cmax,1
+Golimumab,0.5,5 dose groups,3,15,Terminal clearance,0.952
+Golimumab,0.5,5 dose groups,6,30,AUC0-28d,1
+Golimumab,0.5,5 dose groups,6,30,Cmax,1
+Golimumab,0.5,5 dose groups,6,30,Terminal clearance,1

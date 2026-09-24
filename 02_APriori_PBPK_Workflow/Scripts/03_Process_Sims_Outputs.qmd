@@ -1,0 +1,1184 @@
+---
+title: "Step 3: Evaluate a priori monkey and human PK predictions"
+author: "NAMLink"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+editor: source
+---
+
+<style>
+.cell-output-display { overflow-x: auto; }
+table { font-size: 0.88rem; }
+.quarto-figure img, img { max-width: 100%; height: auto; }
+</style>
+
+# Purpose
+
+This tutorial evaluates the a priori simulations saved in Tutorial 2. It keeps
+prediction generation and evaluation separate: the PBPK simulations are already
+complete before observed concentrations are loaded.
+
+The analysis produces:
+
+- observed-versus-predicted concentration-time figures for monkey and human;
+- Cmax, AUC0-28d, AUCinf, and clearance for each molecule-dose scenario;
+- predicted/observed fold errors and within-two-fold accuracy summaries;
+- the percentage of AUCinf that is extrapolated beyond the last concentration;
+- complete scenario- and profile-level tables embedded in this HTML report.
+
+## Metric definitions
+
+- **Cmax** is the maximum concentration in the available profile.
+- **AUC0-28d** uses the linear-up/log-down trapezoidal method through 672 hours.
+  If an observed profile ends before 672 hours, its AUC is necessarily truncated
+  at the last observed time and `Last_time_h` shows that limitation.
+- **AUCinf** equals AUClast plus Clast divided by terminal lambda-z.
+- **Clearance** equals dose divided by AUCinf. Because dose is in mg/kg,
+  clearance is reported in L/day/kg.
+- **Fold error** equals predicted divided by observed. Values from 0.5 through
+  2.0 meet the prespecified two-fold criterion.
+- **Percent extrapolated** equals 100 times `(AUCinf - AUClast) / AUCinf`.
+  Values greater than 20% are flagged.
+
+# 1. Set up portable paths and outputs
+
+```{r}
+#| label: setup
+
+find_project_root_bootstrap <- function(start = getwd()) {
+  current <- normalizePath(start, winslash = "/", mustWork = TRUE)
+  repeat {
+    required <- file.path(
+      current,
+      c("00_Data", "01_Models", "02_APriori_PBPK_Workflow")
+    )
+    if (all(dir.exists(required))) return(current)
+    parent <- dirname(current)
+    if (identical(parent, current)) stop("Project root not found.")
+    current <- parent
+  }
+}
+
+PROJECT_ROOT <- find_project_root_bootstrap()
+WORKFLOW_DIR <- file.path(PROJECT_ROOT, "02_APriori_PBPK_Workflow")
+DATA_DIR <- file.path(PROJECT_ROOT, "00_Data")
+CONFIG_DIR <- file.path(WORKFLOW_DIR, "Configurations")
+
+# Tutorial-local functions. Keeping these definitions in this file makes
+# the Quarto tutorial independently runnable without a separate R helper.
+# The Quarto files source this file to keep the tutorial narrative readable.
+# Functions here perform validation, path resolution, result import, and the
+# noncompartmental calculations used in both the primary and sensitivity
+# analyses. No function fits or calibrates the PBPK model to observed PK data.
+
+find_project_root <- function(start = getwd()) {
+  current <- normalizePath(start, winslash = "/", mustWork = TRUE)
+
+  repeat {
+    expected <- file.path(
+      current,
+      c("00_Data", "01_Models", "02_APriori_PBPK_Workflow")
+    )
+    if (all(dir.exists(expected))) return(current)
+
+    parent <- dirname(current)
+    if (identical(parent, current)) {
+      stop(
+        "Could not locate the project root. Start R from this project or one ",
+        "of its subfolders. Expected 00_Data/, 01_Models/, and ",
+        "02_APriori_PBPK_Workflow/ in the project root."
+      )
+    }
+    current <- parent
+  }
+}
+
+check_package_versions <- function(required) {
+  installed <- vapply(
+    names(required),
+    requireNamespace,
+    quietly = TRUE,
+    FUN.VALUE = logical(1)
+  )
+  if (any(!installed)) {
+    stop(
+      "Install the following R package(s) before continuing: ",
+      paste(names(required)[!installed], collapse = ", ")
+    )
+  }
+
+  versions <- vapply(
+    names(required),
+    function(package) as.character(utils::packageVersion(package)),
+    FUN.VALUE = character(1)
+  )
+  too_old <- vapply(
+    names(required),
+    function(package) {
+      utils::compareVersion(versions[[package]], required[[package]]) < 0
+    },
+    FUN.VALUE = logical(1)
+  )
+  if (any(too_old)) {
+    details <- paste0(
+      names(required)[too_old], " >= ", required[too_old],
+      " (installed: ", versions[too_old], ")"
+    )
+    stop("Package version requirement not met: ", paste(details, collapse = "; "))
+  }
+
+  data.frame(
+    Package = names(versions),
+    Installed = unname(versions),
+    Minimum = unname(required),
+    row.names = NULL,
+    check.names = FALSE
+  )
+}
+
+assert_files_exist <- function(paths, description = "Required input") {
+  missing <- paths[!file.exists(paths)]
+  if (length(missing) > 0) {
+    stop(
+      description, " file(s) not found:\n- ",
+      paste(normalizePath(missing, winslash = "/", mustWork = FALSE),
+            collapse = "\n- ")
+    )
+  }
+  invisible(paths)
+}
+
+normalize_species <- function(x) {
+  x_clean <- tolower(trimws(as.character(x)))
+  dplyr::case_when(
+    x_clean == "human" ~ "Human",
+    x_clean %in% c("nhp", "monkey", "primate", "cynomolgus monkey") ~
+      "Monkey",
+    TRUE ~ stringr::str_to_title(as.character(x))
+  )
+}
+
+time_to_hours <- function(time, unit) {
+  unit_clean <- tolower(trimws(as.character(unit)))
+  dplyr::case_when(
+    unit_clean %in% c("h", "hr", "hrs", "hour", "hours") ~
+      as.numeric(time),
+    unit_clean %in% c("d", "day", "days") ~ as.numeric(time) * 24,
+    unit_clean %in% c("min", "mins", "minute", "minutes") ~
+      as.numeric(time) / 60,
+    TRUE ~ NA_real_
+  )
+}
+
+normalize_micro_unit <- function(x) {
+  micro_symbols <- paste0(intToUtf8(181), intToUtf8(956))
+  x <- as.character(x)
+  Encoding(x) <- "UTF-8"
+  tolower(chartr(micro_symbols, "uu", x))
+}
+
+parse_scenario_name <- function(x) {
+  base <- tools::file_path_sans_ext(basename(x))
+  base <- sub("_mpk$", "", base)
+  parts <- strsplit(base, "_", fixed = TRUE)[[1]]
+  n_parts <- length(parts)
+  if (n_parts < 3L) stop("Could not parse scenario name: ", x)
+
+  molecule <- paste(parts[seq_len(n_parts - 2L)], collapse = "_")
+  species <- normalize_species(parts[n_parts - 1L])
+  dose <- suppressWarnings(as.numeric(parts[n_parts]))
+  if (!is.finite(dose)) stop("Dose is not numeric in scenario name: ", x)
+
+  list(Molecule = molecule, Species = species, Dose = dose)
+}
+
+read_parameter_source <- function(path) {
+  assert_files_exist(path, "Parameter source")
+  x <- openxlsx::read.xlsx(path, sheet = 1, check.names = FALSE)
+  if (ncol(x) < 7L) {
+    stop("Expected at least seven columns in ", path)
+  }
+  names(x)[seq_len(7)] <- c(
+    "Drug.Name", "Target.Name", "Parameter.Name", "Value", "Unit",
+    "Source", "Method"
+  )
+
+  x |>
+    dplyr::transmute(
+      Drug.Name = trimws(as.character(.data$Drug.Name)),
+      Target.Name = trimws(as.character(.data$Target.Name)),
+      Parameter.Name = trimws(as.character(.data$Parameter.Name)),
+      Value = as.numeric(.data$Value),
+      Unit = trimws(as.character(.data$Unit)),
+      Source = as.character(.data$Source),
+      Method = as.character(.data$Method)
+    ) |>
+    dplyr::filter(.data$Drug.Name != "", .data$Parameter.Name != "")
+}
+
+read_target_lookup <- function(parameter_files) {
+  purrr::map_dfr(parameter_files, read_parameter_source) |>
+    dplyr::distinct(.data$Drug.Name, .data$Target.Name) |>
+    dplyr::transmute(
+      Molecule = .data$Drug.Name,
+      Target = .data$Target.Name
+    ) |>
+    dplyr::distinct(.data$Molecule, .keep_all = TRUE)
+}
+
+read_molecular_weight_lookup <- function(data_files) {
+  purrr::map_dfr(data_files, function(path) {
+    assert_files_exist(path, "Observed data")
+    utils::read.csv(
+      path,
+      stringsAsFactors = FALSE,
+      check.names = FALSE,
+      fileEncoding = "UTF-8-BOM"
+    ) |>
+      dplyr::transmute(
+        Molecule = trimws(as.character(.data$Molecule)),
+        MW_g_mol = as.numeric(.data$Molecular.Weight)
+      )
+  }) |>
+    dplyr::filter(is.finite(.data$MW_g_mol)) |>
+    dplyr::distinct(.data$Molecule, .keep_all = TRUE)
+}
+
+resolve_simulation_results <- function(workflow_dir, allow_latest_fallback = TRUE) {
+  results_root <- file.path(workflow_dir, "SimsOutputs", "SimulationResults")
+  manifest <- file.path(workflow_dir, "SimsOutputs", "latest_simulation_run.txt")
+
+  if (file.exists(manifest)) {
+    run_name <- trimws(readLines(manifest, warn = FALSE, n = 1L))
+    selected <- file.path(results_root, run_name)
+    if (nzchar(run_name) && dir.exists(selected)) {
+      return(normalizePath(selected, winslash = "/", mustWork = TRUE))
+    }
+    warning("The simulation manifest points to a missing folder: ", selected)
+  }
+
+  if (!allow_latest_fallback) {
+    stop(
+      "No valid simulation manifest was found. Run 02_Run_Sims.qmd before ",
+      "processing results."
+    )
+  }
+
+  folders <- list.dirs(results_root, recursive = FALSE, full.names = TRUE)
+  if (length(folders) == 0L) {
+    stop("No simulation result folders found in ", results_root)
+  }
+  selected <- folders[which.max(file.mtime(folders))]
+  warning(
+    "No valid run manifest was found; using the most recently modified ",
+    "simulation folder: ", basename(selected)
+  )
+  normalizePath(selected, winslash = "/", mustWork = TRUE)
+}
+
+find_mab_concentration_column <- function(column_names) {
+  candidates <- grep(
+    "PeripheralVenousBlood.*Plasma.*\\[",
+    column_names,
+    value = TRUE
+  )
+  candidates <- candidates[grepl("\\|mAb\\|", candidates)]
+  if (length(candidates) != 1L) {
+    stop(
+      "Expected exactly one peripheral venous plasma mAb concentration ",
+      "column; found ", length(candidates), "."
+    )
+  }
+  candidates
+}
+
+read_simulation_profile <- function(path, mw_lookup) {
+  meta <- parse_scenario_name(path)
+  raw <- data.table::fread(path, data.table = FALSE, check.names = FALSE)
+  concentration_column <- find_mab_concentration_column(names(raw))
+  concentration_unit <- sub(
+    ".*\\[([^]]+)\\]$",
+    "\\1",
+    concentration_column
+  )
+  concentration_unit_normalized <- normalize_micro_unit(concentration_unit)
+  if (!identical(concentration_unit_normalized, "umol/l")) {
+    stop(
+      "Expected simulated plasma concentration in micromol/L; found ",
+      concentration_unit, " in ", basename(path), "."
+    )
+  }
+  mw <- mw_lookup$MW_g_mol[mw_lookup$Molecule == meta$Molecule]
+  if (length(mw) != 1L || !is.finite(mw)) {
+    stop("No unique molecular weight found for ", meta$Molecule)
+  }
+
+  tibble::tibble(
+    Molecule = meta$Molecule,
+    Species = meta$Species,
+    Dose = meta$Dose,
+    IndividualId = as.character(raw[["IndividualId"]]),
+    Time_h = as.numeric(raw[["Time [min]"]]) / 60,
+    # micromol/L * g/mol / 1000 = microgram/mL.
+    Conc_ug_mL = as.numeric(raw[[concentration_column]]) * mw / 1000
+  )
+}
+
+mean_or_na <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0L) NA_real_ else mean(x)
+}
+
+prepare_profile <- function(time_h, conc, t_end_h = Inf) {
+  profile <- tibble::tibble(
+    Time_h = as.numeric(time_h),
+    Conc = as.numeric(conc)
+  ) |>
+    dplyr::filter(
+      is.finite(.data$Time_h), is.finite(.data$Conc),
+      .data$Time_h >= 0, .data$Conc >= 0
+    ) |>
+    dplyr::group_by(.data$Time_h) |>
+    dplyr::summarise(Conc = mean(.data$Conc), .groups = "drop") |>
+    dplyr::arrange(.data$Time_h)
+
+  if (nrow(profile) == 0L) return(profile)
+
+  # If the requested boundary lies between observations, add a boundary value.
+  if (is.finite(t_end_h) && min(profile$Time_h) < t_end_h &&
+      max(profile$Time_h) > t_end_h && !any(profile$Time_h == t_end_h)) {
+    lower <- max(which(profile$Time_h < t_end_h))
+    upper <- min(which(profile$Time_h > t_end_h))
+    fraction <- (t_end_h - profile$Time_h[lower]) /
+      (profile$Time_h[upper] - profile$Time_h[lower])
+    c1 <- profile$Conc[lower]
+    c2 <- profile$Conc[upper]
+    boundary_conc <- if (c1 > 0 && c2 > 0) {
+      exp(log(c1) + fraction * (log(c2) - log(c1)))
+    } else {
+      c1 + fraction * (c2 - c1)
+    }
+    profile <- dplyr::bind_rows(
+      profile,
+      tibble::tibble(Time_h = t_end_h, Conc = boundary_conc)
+    ) |>
+      dplyr::arrange(.data$Time_h)
+  }
+
+  profile <- dplyr::filter(profile, .data$Time_h <= t_end_h)
+  if (nrow(profile) > 0L && !any(profile$Time_h == 0)) {
+    profile <- dplyr::bind_rows(
+      tibble::tibble(Time_h = 0, Conc = 0),
+      profile
+    )
+  }
+  profile
+}
+
+linear_up_log_down_auc <- function(profile) {
+  if (nrow(profile) < 2L) return(NA_real_)
+  dt <- diff(profile$Time_h)
+  c1 <- profile$Conc[-nrow(profile)]
+  c2 <- profile$Conc[-1L]
+  log_down <- c2 < c1 & c1 > 0 & c2 > 0
+  intervals <- ifelse(
+    log_down,
+    dt * (c1 - c2) / log(c1 / c2),
+    dt * (c1 + c2) / 2
+  )
+  sum(intervals)
+}
+
+best_terminal_fit <- function(profile, min_points = 3L) {
+  positive <- profile |>
+    dplyr::filter(.data$Conc > 0) |>
+    dplyr::arrange(.data$Time_h)
+  if (nrow(positive) < min_points) {
+    return(tibble::tibble(
+      Lambda_z_1_h = NA_real_,
+      Terminal_points_n = NA_integer_,
+      Adjusted_R_squared = NA_real_
+    ))
+  }
+
+  cmax_index <- which.max(positive$Conc)[1]
+  post_cmax <- if (cmax_index < nrow(positive)) {
+    positive[(cmax_index + 1L):nrow(positive), , drop = FALSE]
+  } else {
+    positive[0, , drop = FALSE]
+  }
+  if (nrow(post_cmax) < min_points) {
+    post_cmax <- positive[cmax_index:nrow(positive), , drop = FALSE]
+  }
+  if (nrow(post_cmax) < min_points) {
+    return(tibble::tibble(
+      Lambda_z_1_h = NA_real_,
+      Terminal_points_n = NA_integer_,
+      Adjusted_R_squared = NA_real_
+    ))
+  }
+
+  x <- post_cmax$Time_h
+  y <- log(post_cmax$Conc)
+  total_n <- length(x)
+  suffix_sum <- function(z) rev(cumsum(rev(z)))
+  sx <- suffix_sum(x)
+  sy <- suffix_sum(y)
+  sxx <- suffix_sum(x * x)
+  syy <- suffix_sum(y * y)
+  sxy <- suffix_sum(x * y)
+
+  terminal_n <- seq.int(min_points, total_n)
+  start <- total_n - terminal_n + 1L
+  centered_xx <- sxx[start] - sx[start]^2 / terminal_n
+  centered_yy <- syy[start] - sy[start]^2 / terminal_n
+  centered_xy <- sxy[start] - sx[start] * sy[start] / terminal_n
+  slope <- centered_xy / centered_xx
+  r_squared <- (centered_xy^2) / (centered_xx * centered_yy)
+  r_squared <- pmin(pmax(r_squared, 0), 1)
+  adjusted_r_squared <-
+    1 - (1 - r_squared) * (terminal_n - 1) / (terminal_n - 2)
+
+  candidates <- tibble::tibble(
+    Lambda_z_1_h = -slope,
+    Terminal_points_n = terminal_n,
+    Adjusted_R_squared = adjusted_r_squared
+  ) |>
+    dplyr::filter(
+      is.finite(.data$Lambda_z_1_h), .data$Lambda_z_1_h > 0,
+      is.finite(.data$Adjusted_R_squared)
+    ) |>
+    dplyr::arrange(
+      dplyr::desc(.data$Adjusted_R_squared),
+      dplyr::desc(.data$Terminal_points_n)
+    )
+
+  if (nrow(candidates) == 0L) {
+    tibble::tibble(
+      Lambda_z_1_h = NA_real_,
+      Terminal_points_n = NA_integer_,
+      Adjusted_R_squared = NA_real_
+    )
+  } else {
+    candidates[1, , drop = FALSE]
+  }
+}
+
+profile_pk_metrics <- function(time_h, conc, dose_mg_kg, t_end_h = 28 * 24) {
+  profile <- prepare_profile(time_h, conc, t_end_h = t_end_h)
+  if (nrow(profile) < 2L || !any(profile$Conc > 0)) {
+    return(tibble::tibble(
+      Cmax_ug_mL = NA_real_, AUC0_28d_ug_h_mL = NA_real_,
+      AUClast_ug_h_mL = NA_real_, AUCinf_ug_h_mL = NA_real_,
+      AUC_extrapolated_pct = NA_real_, Lambda_z_1_h = NA_real_,
+      Terminal_half_life_day = NA_real_, Terminal_points_n = NA_integer_,
+      Last_time_h = NA_real_, CL_L_day_kg = NA_real_
+    ))
+  }
+
+  terminal <- best_terminal_fit(profile)
+  auc_last <- linear_up_log_down_auc(profile)
+  positive <- dplyr::filter(profile, .data$Conc > 0)
+  last <- positive[nrow(positive), , drop = FALSE]
+  lambda_z <- terminal$Lambda_z_1_h[[1]]
+  extrapolated_auc <- if (is.finite(lambda_z)) last$Conc[[1]] / lambda_z else NA_real_
+  auc_inf <- if (is.finite(extrapolated_auc)) auc_last + extrapolated_auc else NA_real_
+
+  tibble::tibble(
+    Cmax_ug_mL = max(profile$Conc, na.rm = TRUE),
+    # When observations end before day 28, this is the available partial AUC.
+    AUC0_28d_ug_h_mL = auc_last,
+    AUClast_ug_h_mL = auc_last,
+    AUCinf_ug_h_mL = auc_inf,
+    AUC_extrapolated_pct = if (is.finite(auc_inf) && auc_inf > 0) {
+      100 * extrapolated_auc / auc_inf
+    } else {
+      NA_real_
+    },
+    Lambda_z_1_h = lambda_z,
+    Terminal_half_life_day = if (is.finite(lambda_z)) {
+      log(2) / lambda_z / 24
+    } else {
+      NA_real_
+    },
+    Terminal_points_n = terminal$Terminal_points_n[[1]],
+    Last_time_h = last$Time_h[[1]],
+    # Dose is mg/kg and AUC is mg*h/L, so dose/AUC is L/h/kg.
+    CL_L_day_kg = if (is.finite(auc_inf) && auc_inf > 0) {
+      24 * as.numeric(dose_mg_kg) / auc_inf
+    } else {
+      NA_real_
+    }
+  )
+}
+
+within_two_fold <- function(fold_error) {
+  is.finite(fold_error) & fold_error >= 0.5 & fold_error <= 2
+}
+
+required_versions <- c(
+  dplyr = "1.1.0", tidyr = "1.3.0", purrr = "1.0.0",
+  stringr = "1.5.0", tibble = "3.2.0", ggplot2 = "3.4.0",
+  scales = "1.2.0", data.table = "1.14.0", openxlsx = "4.2.5",
+  knitr = "1.40"
+)
+package_versions <- check_package_versions(required_versions)
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(tibble)
+library(ggplot2)
+library(scales)
+library(data.table)
+library(openxlsx)
+library(knitr)
+
+AUC_END_H <- 28 * 24
+EXTRAPOLATION_THRESHOLD_PCT <- 20
+
+package_versions |>
+  knitr::kable(caption = "R packages used for prediction evaluation")
+```
+
+# 2. Load the formatted observed profiles
+
+The observed data remain separate from model generation. This step standardizes
+species labels and time units, retains quantifiable IV observations, and creates
+a stable profile identifier from the study and subject fields.
+
+```{r}
+#| label: load-observed
+
+monkey_data_file <- file.path(DATA_DIR, "Monkey", "mAb_data_clean.csv")
+human_data_file <- file.path(DATA_DIR, "Human", "mAb_data_human.csv")
+parameter_files <- c(
+  file.path(DATA_DIR, "Monkey", "Parameters.xlsx"),
+  file.path(DATA_DIR, "Human", "Parameters_human.xlsx")
+)
+assert_files_exist(c(monkey_data_file, human_data_file, parameter_files))
+
+read_observed_profiles <- function(path, expected_species) {
+  raw <- utils::read.csv(
+    path,
+    stringsAsFactors = FALSE,
+    check.names = FALSE,
+    fileEncoding = "UTF-8-BOM",
+    na.strings = c("", "NA")
+  )
+
+  unsupported_concentration_units <- setdiff(
+    unique(trimws(as.character(raw$Measurement.unit))),
+    c("ug/mL", NA_character_)
+  )
+  if (length(unsupported_concentration_units) > 0L) {
+    stop(
+      "Unsupported concentration unit(s) in ", basename(path), ": ",
+      paste(unsupported_concentration_units, collapse = ", ")
+    )
+  }
+
+  observed <- raw |>
+    mutate(
+      Species = normalize_species(.data$Species),
+      Time_h = time_to_hours(.data$Time, .data$Time.unit),
+      Conc_ug_mL = suppressWarnings(as.numeric(.data$Measurement)),
+      Study_key = as.character(.data$Study.Id),
+      Subject_key = dplyr::coalesce(
+        na_if(as.character(.data$Subject.Id), "."),
+        na_if(as.character(.data$Group.Id), "."),
+        as.character(.data$Study.Id)
+      ),
+      Profile_ID = paste(.data$Study_key, .data$Subject_key, sep = " | ")
+    ) |>
+    filter(
+      .data$Species == expected_species,
+      grepl("^IV", trimws(as.character(.data$Route)), ignore.case = TRUE),
+      is.finite(.data$Time_h),
+      is.finite(.data$Conc_ug_mL),
+      .data$Conc_ug_mL > 0
+    ) |>
+    transmute(
+      .data$Species, .data$Molecule, Dose = as.numeric(.data$Dose),
+      .data$Profile_ID, .data$Time_h, .data$Conc_ug_mL
+    )
+
+  if (nrow(observed) == 0L) {
+    stop("No quantifiable IV observations found in ", path)
+  }
+  observed
+}
+
+observed <- bind_rows(
+  read_observed_profiles(monkey_data_file, "Monkey"),
+  read_observed_profiles(human_data_file, "Human")
+)
+
+target_lookup <- read_target_lookup(parameter_files)
+mw_lookup <- read_molecular_weight_lookup(
+  c(monkey_data_file, human_data_file)
+)
+
+observed |>
+  group_by(.data$Species) |>
+  summarise(
+    Molecules = n_distinct(.data$Molecule),
+    Dose_scenarios = n_distinct(paste(.data$Molecule, .data$Dose)),
+    Profiles = n_distinct(.data$Profile_ID),
+    Observations = n(),
+    .groups = "drop"
+  ) |>
+  knitr::kable(caption = "Observed data available for retrospective evaluation")
+```
+
+# 3. Load the simulation run selected by Tutorial 2
+
+Scenario names in `Scenarios.xlsx` define the expected CSV filenames. This is
+safer than reading every CSV in the output folder, which may also contain run
+summaries or population exports.
+
+For compatibility with the existing project outputs, the code falls back to the
+most recently modified simulation folder when the manifest has not yet been
+created. New runs should always use the manifest written by Tutorial 2.
+
+```{r}
+#| label: load-predictions
+
+results_folder <- resolve_simulation_results(
+  WORKFLOW_DIR,
+  allow_latest_fallback = TRUE
+)
+scenario_table <- openxlsx::read.xlsx(
+  file.path(CONFIG_DIR, "Scenarios.xlsx"),
+  sheet = "Scenarios",
+  check.names = FALSE
+)
+scenario_files <- file.path(
+  results_folder,
+  paste0(scenario_table$Scenario_name, ".csv")
+)
+assert_files_exist(scenario_files, "Scenario result")
+
+predicted <- purrr::map_dfr(
+  scenario_files,
+  read_simulation_profile,
+  mw_lookup = mw_lookup
+)
+
+expected_scenarios <- scenario_table |>
+  transmute(
+    Meta = map(.data$Scenario_name, parse_scenario_name),
+    Molecule = map_chr(.data$Meta, "Molecule"),
+    Species = map_chr(.data$Meta, "Species"),
+    Dose = map_dbl(.data$Meta, "Dose")
+  ) |>
+  select(-.data$Meta)
+
+loaded_scenarios <- predicted |>
+  distinct(.data$Molecule, .data$Species, .data$Dose)
+scenario_key <- function(x) {
+  paste(x$Species, x$Molecule, format(x$Dose, scientific = FALSE), sep = "|")
+}
+if (!setequal(scenario_key(expected_scenarios), scenario_key(loaded_scenarios))) {
+  stop("Loaded simulation results do not match Scenarios.xlsx.")
+}
+
+data.frame(
+  Selected_run = basename(results_folder),
+  Scenario_files = length(scenario_files),
+  Simulated_rows = nrow(predicted),
+  stringsAsFactors = FALSE
+) |>
+  knitr::kable(caption = "Simulation output selected for evaluation")
+```
+
+# 4. Plot observed and predicted concentration-time profiles
+
+The line is the median prediction and the ribbon is the 5th to 95th percentile
+across simulated individuals. If a scenario contains one deterministic
+individual, the ribbon collapses onto the median. Points show the arithmetic
+mean observed concentration; error bars show one standard deviation when more
+than one observation is available at a time point.
+
+```{r}
+#| label: summarize-for-plots
+
+prediction_individual_counts <- predicted |>
+  distinct(
+    .data$Molecule, .data$Species, .data$Dose, .data$IndividualId
+  ) |>
+  count(.data$Molecule, .data$Species, .data$Dose, name = "Individuals")
+
+if (all(prediction_individual_counts$Individuals == 1L)) {
+  # The supplied a priori scenarios are deterministic individual simulations,
+  # so all three summary curves are the same curve.
+  prediction_plot_data <- predicted |>
+    filter(.data$Time_h <= AUC_END_H) |>
+    transmute(
+      .data$Molecule, .data$Species, .data$Dose, .data$Time_h,
+      Pred_p05 = .data$Conc_ug_mL,
+      Pred_median = .data$Conc_ug_mL,
+      Pred_p95 = .data$Conc_ug_mL
+    )
+} else {
+  prediction_plot_data <- predicted |>
+    filter(.data$Time_h <= AUC_END_H) |>
+    group_by(.data$Molecule, .data$Species, .data$Dose, .data$Time_h) |>
+    summarise(
+      Pred_p05 = quantile(.data$Conc_ug_mL, 0.05, na.rm = TRUE),
+      Pred_median = median(.data$Conc_ug_mL, na.rm = TRUE),
+      Pred_p95 = quantile(.data$Conc_ug_mL, 0.95, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+
+prediction_plot_data <- prediction_plot_data |>
+  # Limit only the number of points drawn in the HTML. PK calculations below
+  # continue to use every simulated time point.
+  group_by(.data$Molecule, .data$Species, .data$Dose) |>
+  group_modify(function(.x, .y) {
+    maximum_plot_points <- 500L
+    if (nrow(.x) <= maximum_plot_points) return(.x)
+    indices <- unique(round(seq(
+      1, nrow(.x), length.out = maximum_plot_points
+    )))
+    .x[indices, , drop = FALSE]
+  }) |>
+  ungroup()
+
+observed_plot_data <- observed |>
+  filter(.data$Time_h <= AUC_END_H) |>
+  group_by(.data$Molecule, .data$Species, .data$Dose, .data$Time_h) |>
+  summarise(
+    Obs_mean = mean(.data$Conc_ug_mL, na.rm = TRUE),
+    Obs_sd = sd(.data$Conc_ug_mL, na.rm = TRUE),
+    Observations = n(),
+    .groups = "drop"
+  ) |>
+  mutate(
+    Obs_lower = pmax(.data$Obs_mean - .data$Obs_sd, .Machine$double.eps),
+    Obs_upper = .data$Obs_mean + .data$Obs_sd
+  )
+
+facet_levels <- target_lookup |>
+  arrange(.data$Target, .data$Molecule) |>
+  transmute(Facet = paste(.data$Target, .data$Molecule, sep = " | ")) |>
+  pull(.data$Facet)
+
+add_plot_labels <- function(x) {
+  x |>
+    left_join(target_lookup, by = "Molecule") |>
+    mutate(
+      Target = coalesce(.data$Target, "Target not specified"),
+      Facet = factor(
+        paste(.data$Target, .data$Molecule, sep = " | "),
+        levels = facet_levels
+      )
+    )
+}
+
+prediction_plot_data <- add_plot_labels(prediction_plot_data)
+observed_plot_data <- add_plot_labels(observed_plot_data)
+```
+
+```{r}
+#| label: build-concentration-time-figures
+#| fig-width: 12
+#| fig-height: 8
+
+plot_species_predictions <- function(species_label) {
+  simulated <- prediction_plot_data |>
+    filter(.data$Species == species_label)
+  observed_species <- observed_plot_data |>
+    filter(.data$Species == species_label)
+
+  plot <- ggplot() +
+    geom_ribbon(
+      data = simulated,
+      aes(
+        x = .data$Time_h,
+        ymin = .data$Pred_p05,
+        ymax = .data$Pred_p95,
+        fill = factor(.data$Dose)
+      ),
+      alpha = 0.18
+    ) +
+    geom_line(
+      data = simulated,
+      aes(
+        x = .data$Time_h,
+        y = .data$Pred_median,
+        colour = factor(.data$Dose)
+      ),
+      linewidth = 0.75
+    ) +
+    geom_point(
+      data = observed_species,
+      aes(
+        x = .data$Time_h,
+        y = .data$Obs_mean,
+        colour = factor(.data$Dose)
+      ),
+      size = 1.7
+    ) +
+    geom_errorbar(
+      data = filter(
+        observed_species,
+        .data$Observations > 1,
+        is.finite(.data$Obs_sd)
+      ),
+      aes(
+        x = .data$Time_h,
+        ymin = .data$Obs_lower,
+        ymax = .data$Obs_upper,
+        colour = factor(.data$Dose)
+      ),
+      width = 1.5,
+      linewidth = 0.35
+    ) +
+    facet_wrap(~ Facet, scales = "free_y", ncol = 3, drop = TRUE) +
+    scale_x_continuous(
+      limits = c(0, AUC_END_H),
+      breaks = seq(0, AUC_END_H, by = 168),
+      labels = function(x) x / 24
+    ) +
+    scale_y_log10(labels = scales::label_scientific(digits = 2)) +
+    scale_colour_viridis_d(name = "Dose (mg/kg)", option = "D", end = 0.88) +
+    scale_fill_viridis_d(name = "Dose (mg/kg)", option = "D", end = 0.88) +
+    labs(
+      title = paste(species_label, "a priori PBPK predictions"),
+      subtitle = "Lines and ribbons: predicted; points and error bars: observed",
+      x = "Time after dose (days)",
+      y = "Plasma concentration (microgram/mL)"
+    ) +
+    theme_bw(base_size = 11) +
+    guides(fill = "none") +
+    theme(
+      strip.background = element_rect(fill = "grey93"),
+      strip.text = element_text(face = "bold", size = 8),
+      legend.position = "bottom",
+      panel.grid.minor = element_blank()
+    )
+
+  plot
+}
+
+monkey_plot <- plot_species_predictions("Monkey")
+human_plot <- plot_species_predictions("Human")
+
+```
+
+```{r}
+#| label: fig-monkey-concentration-time
+#| fig-cap: "Monkey observed concentrations and a priori PBPK predictions."
+#| fig-width: 13
+#| fig-height: 9
+#| out-width: "100%"
+monkey_plot
+```
+
+```{r}
+#| label: fig-human-concentration-time
+#| fig-cap: "Human observed concentrations and a priori PBPK predictions."
+#| fig-width: 13
+#| fig-height: 9
+#| out-width: "100%"
+human_plot
+```
+
+# 5. Calculate profile-level PK metrics
+
+Metrics are first calculated for each observed subject and each simulated
+individual. Scenario-level values are then arithmetic means across profiles.
+This preserves the distinction between within-profile noncompartmental
+calculation and between-profile aggregation.
+
+The terminal phase is selected from consecutive post-Cmax suffixes using the
+largest adjusted R-squared, with at least three positive concentrations. The
+selected number of points and terminal-phase diagnostics remain in the embedded
+HTML tables so questionable AUCinf estimates can be identified.
+
+```{r}
+#| label: calculate-pk-metrics
+
+metric_columns <- c(
+  "Cmax_ug_mL", "AUC0_28d_ug_h_mL", "AUClast_ug_h_mL",
+  "AUCinf_ug_h_mL", "AUC_extrapolated_pct", "Lambda_z_1_h",
+  "Terminal_half_life_day", "Terminal_points_n", "Last_time_h",
+  "CL_L_day_kg"
+)
+
+observed_profile_metrics <- observed |>
+  group_by(
+    .data$Molecule, .data$Species, .data$Dose, .data$Profile_ID
+  ) |>
+  group_modify(~ profile_pk_metrics(
+    .x$Time_h,
+    .x$Conc_ug_mL,
+    dose_mg_kg = .y$Dose[[1]],
+    t_end_h = AUC_END_H
+  )) |>
+  ungroup()
+
+predicted_profile_metrics <- predicted |>
+  group_by(
+    .data$Molecule, .data$Species, .data$Dose, .data$IndividualId
+  ) |>
+  group_modify(~ profile_pk_metrics(
+    .x$Time_h,
+    .x$Conc_ug_mL,
+    dose_mg_kg = .y$Dose[[1]],
+    t_end_h = AUC_END_H
+  )) |>
+  ungroup()
+
+summarize_metrics <- function(data, prefix) {
+  data |>
+    group_by(.data$Molecule, .data$Species, .data$Dose) |>
+    summarise(
+      Profiles_n = n(),
+      across(all_of(metric_columns), mean_or_na),
+      .groups = "drop"
+    ) |>
+    rename_with(
+      ~ paste0(prefix, "_", .x),
+      all_of(c("Profiles_n", metric_columns))
+    )
+}
+
+observed_metrics <- summarize_metrics(observed_profile_metrics, "Observed")
+predicted_metrics <- summarize_metrics(predicted_profile_metrics, "Predicted")
+
+scenario_metrics <- full_join(
+  observed_metrics,
+  predicted_metrics,
+  by = c("Molecule", "Species", "Dose")
+) |>
+  left_join(target_lookup, by = "Molecule") |>
+  mutate(
+    FE_Cmax = .data$Predicted_Cmax_ug_mL / .data$Observed_Cmax_ug_mL,
+    FE_AUC0_28d =
+      .data$Predicted_AUC0_28d_ug_h_mL / .data$Observed_AUC0_28d_ug_h_mL,
+    FE_Clearance = .data$Predicted_CL_L_day_kg / .data$Observed_CL_L_day_kg,
+    Observed_AUC_extrapolation_flag = case_when(
+      !is.finite(.data$Observed_AUC_extrapolated_pct) ~ "Not estimable",
+      .data$Observed_AUC_extrapolated_pct > EXTRAPOLATION_THRESHOLD_PCT ~ ">20%",
+      TRUE ~ "<=20%"
+    ),
+    Predicted_AUC_extrapolation_flag = case_when(
+      !is.finite(.data$Predicted_AUC_extrapolated_pct) ~ "Not estimable",
+      .data$Predicted_AUC_extrapolated_pct > EXTRAPOLATION_THRESHOLD_PCT ~ ">20%",
+      TRUE ~ "<=20%"
+    )
+  ) |>
+  arrange(
+    factor(.data$Species, levels = c("Monkey", "Human")),
+    .data$Target, .data$Molecule, .data$Dose
+  )
+```
+
+# 6. Summarize predictive performance
+
+The accuracy denominator includes only scenarios with finite observed and
+predicted values for the relevant metric. This prevents a non-estimable AUCinf
+or clearance from being counted as a failed prediction without being visible.
+
+```{r}
+#| label: accuracy-summary
+
+accuracy_summary <- scenario_metrics |>
+  select(
+    .data$Species, .data$Molecule, .data$Dose,
+    Cmax = .data$FE_Cmax,
+    `AUC0-28d` = .data$FE_AUC0_28d,
+    Clearance = .data$FE_Clearance
+  ) |>
+  pivot_longer(
+    cols = c("Cmax", "AUC0-28d", "Clearance"),
+    names_to = "Metric",
+    values_to = "Fold_error"
+  ) |>
+  filter(is.finite(.data$Fold_error)) |>
+  group_by(.data$Species, .data$Metric) |>
+  summarise(
+    Within_two_fold = sum(within_two_fold(.data$Fold_error)),
+    Evaluated = n(),
+    .groups = "drop"
+  ) |>
+  mutate(Accuracy = .data$Within_two_fold / .data$Evaluated) |>
+  arrange(
+    factor(.data$Species, levels = c("Monkey", "Human")),
+    match(.data$Metric, c("AUC0-28d", "Cmax", "Clearance"))
+  )
+
+accuracy_summary |>
+  mutate(Accuracy = scales::percent(.data$Accuracy, accuracy = 1)) |>
+  knitr::kable(caption = "Predictions within the 0.5- to 2-fold criterion")
+```
+
+## Monkey scenario metrics
+
+```{r}
+#| label: monkey-metrics-table
+
+display_columns <- c(
+  "Target", "Molecule", "Dose",
+  "Observed_Cmax_ug_mL", "Predicted_Cmax_ug_mL", "FE_Cmax",
+  "Observed_AUC0_28d_ug_h_mL", "Predicted_AUC0_28d_ug_h_mL",
+  "FE_AUC0_28d", "Observed_CL_L_day_kg", "Predicted_CL_L_day_kg",
+  "FE_Clearance", "Observed_AUC_extrapolated_pct",
+  "Observed_AUC_extrapolation_flag"
+)
+
+scenario_metrics |>
+  filter(.data$Species == "Monkey") |>
+  select(all_of(display_columns)) |>
+  mutate(across(where(is.numeric), ~ round(.x, 3))) |>
+  knitr::kable(caption = "Monkey observed and a priori predicted PK metrics")
+```
+
+## Human scenario metrics
+
+```{r}
+#| label: human-metrics-table
+
+scenario_metrics |>
+  filter(.data$Species == "Human") |>
+  select(all_of(display_columns)) |>
+  mutate(across(where(is.numeric), ~ round(.x, 3))) |>
+  knitr::kable(caption = "Human observed and a priori predicted PK metrics")
+```
+
+# 7. Inspect AUCinf extrapolation
+
+A high extrapolated fraction indicates that terminal exposure and clearance are
+sensitive to the selected terminal slope. The flag is a diagnostic; it is not a
+replacement for reviewing the underlying concentration-time profile and the
+selected terminal time points.
+
+```{r}
+#| label: auc-extrapolation-table
+
+auc_extrapolation <- scenario_metrics |>
+  transmute(
+    .data$Species, .data$Target, .data$Molecule,
+    `Dose (mg/kg)` = .data$Dose,
+    `Observed profiles (n)` = .data$Observed_Profiles_n,
+    `Observed last time (h)` = .data$Observed_Last_time_h,
+    `Observed terminal points (mean n)` =
+      .data$Observed_Terminal_points_n,
+    `Observed AUCinf (ug*h/mL)` = .data$Observed_AUCinf_ug_h_mL,
+    `Observed AUC extrapolated (%)` =
+      .data$Observed_AUC_extrapolated_pct,
+    `Observed flag` = .data$Observed_AUC_extrapolation_flag,
+    `Predicted profiles (n)` = .data$Predicted_Profiles_n,
+    `Predicted last time (h)` = .data$Predicted_Last_time_h,
+    `Predicted terminal points (mean n)` =
+      .data$Predicted_Terminal_points_n,
+    `Predicted AUCinf (ug*h/mL)` = .data$Predicted_AUCinf_ug_h_mL,
+    `Predicted AUC extrapolated (%)` =
+      .data$Predicted_AUC_extrapolated_pct,
+    `Predicted flag` = .data$Predicted_AUC_extrapolation_flag
+  )
+
+auc_extrapolation |>
+  mutate(across(where(is.numeric), ~ round(.x, 2))) |>
+  knitr::kable(caption = "AUCinf terminal-phase and extrapolation diagnostics")
+```
+
+# 8. Present the complete analysis record in this HTML
+
+No figures or tables are written to companion files. Everything needed to
+review the evaluation is embedded below and will remain inside the single HTML
+created by Quarto.
+
+## Analysis settings
+
+```{r}
+#| label: analysis-record
+
+analysis_record <- data.frame(
+  Field = c(
+    "Simulation result folder", "Analysis date", "AUC end (h)",
+    "AUC extrapolation flag threshold (%)",
+    "Observed concentration unit", "Predicted concentration conversion"
+  ),
+  Value = c(
+    basename(results_folder), as.character(Sys.Date()), AUC_END_H,
+    EXTRAPOLATION_THRESHOLD_PCT, "microgram/mL",
+    "micromol/L multiplied by molecular weight (g/mol) divided by 1000"
+  ),
+  stringsAsFactors = FALSE
+)
+
+analysis_record |>
+  knitr::kable(caption = "Analysis settings embedded in this report")
+```
+
+## Complete scenario-level metrics
+
+```{r}
+#| label: complete-scenario-metrics
+
+scenario_metrics |>
+  mutate(across(where(is.numeric), ~ round(.x, 4))) |>
+  knitr::kable(
+    caption = "Complete observed and predicted scenario-level PK metrics",
+    row.names = FALSE
+  )
+```
+
+## Complete observed profile-level metrics
+
+```{r}
+#| label: complete-observed-profile-metrics
+
+observed_profile_metrics |>
+  mutate(across(where(is.numeric), ~ round(.x, 4))) |>
+  knitr::kable(
+    caption = "Observed profile-level calculations",
+    row.names = FALSE
+  )
+```
+
+## Complete predicted profile-level metrics
+
+```{r}
+#| label: complete-predicted-profile-metrics
+
+predicted_profile_metrics |>
+  mutate(across(where(is.numeric), ~ round(.x, 4))) |>
+  knitr::kable(
+    caption = "Predicted profile-level calculations",
+    row.names = FALSE
+  )
+```
+
+## R session information
+
+```{r}
+#| label: evaluation-session-info
+
+sessionInfo()
+```
+
+# Interpretation checklist
+
+For each molecule and dose, review the concentration-time plot together with
+the metric table. A Cmax fold error can be influenced by infusion duration and
+early sampling. AUC0-28d and clearance are mathematically related because
+clearance is derived from AUCinf. When the AUCinf extrapolated fraction is high,
+interpret clearance cautiously and inspect the terminal sampling window before
+attributing a discrepancy to the PBPK model.
+
+Tutorial 4 examines whether uncertainty in target reference concentration,
+target degradation, or complex internalization can explain clearance
+sensitivity. It is optional for generating the primary a priori predictions.

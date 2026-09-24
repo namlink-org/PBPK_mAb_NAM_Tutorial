@@ -1,0 +1,374 @@
+---
+title: "Step 2: Run the a priori monkey and human PBPK simulations"
+author: "NAMLink"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+editor: source
+---
+
+<style>
+.cell-output-display { overflow-x: auto; }
+table { font-size: 0.92rem; }
+img { max-width: 100%; height: auto; }
+</style>
+
+# Purpose
+
+This script loads the PKML models and the configuration workbooks created in
+Step 1, applies the molecule- and species-specific parameters, and
+runs every configured monkey and human dose scenario.
+
+No observed concentration measurements enter the simulation step. Observed data
+are introduced only in Step 3, after the prediction files have been saved.
+
+## Inputs and outputs
+
+Inputs are `ProjectConfiguration.xlsx`, the files under `Configurations/`, and
+the PKML models under `01_Models/`.
+
+`saveScenarioResults()` creates a timestamped folder under
+`SimsOutputs/SimulationResults/`. This script also writes
+`SimsOutputs/latest_simulation_run.txt`. Steps 3 and 4 use that manifest so
+they process the intended run instead of silently selecting an arbitrary folder.
+
+# 1. Set up and check software versions
+
+The manuscript analysis used esqlabsR 5.6.0 and ospsuite 12.4.2. The script
+accepts those versions or later.
+
+```{r}
+#| label: setup
+
+find_project_root_bootstrap <- function(start = getwd()) {
+  current <- normalizePath(start, winslash = "/", mustWork = TRUE)
+  repeat {
+    required <- file.path(
+      current,
+      c("00_Data", "01_Models", "02_APriori_PBPK_Workflow")
+    )
+    if (all(dir.exists(required))) return(current)
+    parent <- dirname(current)
+    if (identical(parent, current)) stop("Project root not found.")
+    current <- parent
+  }
+}
+
+PROJECT_ROOT <- find_project_root_bootstrap()
+WORKFLOW_DIR <- file.path(PROJECT_ROOT, "02_APriori_PBPK_Workflow")
+CONFIG_DIR <- file.path(WORKFLOW_DIR, "Configurations")
+PROJECT_CONFIG_FILE <- file.path(WORKFLOW_DIR, "ProjectConfiguration.xlsx")
+
+check_package_versions <- function(required) {
+  installed <- vapply(
+    names(required), requireNamespace, quietly = TRUE,
+    FUN.VALUE = logical(1)
+  )
+  if (any(!installed)) {
+    stop(
+      "Install the following R package(s) before continuing: ",
+      paste(names(required)[!installed], collapse = ", ")
+    )
+  }
+  versions <- vapply(
+    names(required),
+    function(package) as.character(utils::packageVersion(package)),
+    FUN.VALUE = character(1)
+  )
+  too_old <- vapply(
+    names(required),
+    function(package) {
+      utils::compareVersion(versions[[package]], required[[package]]) < 0
+    },
+    FUN.VALUE = logical(1)
+  )
+  if (any(too_old)) {
+    stop(
+      "Package version requirement not met: ",
+      paste0(
+        names(required)[too_old], " >= ", required[too_old],
+        " (installed: ", versions[too_old], ")",
+        collapse = "; "
+      )
+    )
+  }
+  data.frame(
+    Package = names(versions), Installed = unname(versions),
+    Minimum = unname(required), row.names = NULL, check.names = FALSE
+  )
+}
+
+assert_files_exist <- function(paths, description = "Required input") {
+  missing <- paths[!file.exists(paths)]
+  if (length(missing) > 0L) {
+    stop(
+      description, " file(s) not found:\n- ",
+      paste(
+        normalizePath(missing, winslash = "/", mustWork = FALSE),
+        collapse = "\n- "
+      )
+    )
+  }
+  invisible(paths)
+}
+
+record_simulation_run <- function(output_folder, workflow_dir) {
+  output_folder <- normalizePath(output_folder, winslash = "/", mustWork = TRUE)
+  manifest <- file.path(
+    workflow_dir, "SimsOutputs", "latest_simulation_run.txt"
+  )
+  dir.create(dirname(manifest), recursive = TRUE, showWarnings = FALSE)
+  writeLines(basename(output_folder), manifest, useBytes = TRUE)
+  invisible(manifest)
+}
+
+required_versions <- c(
+  esqlabsR = "5.6.0",
+  ospsuite = "12.4.2",
+  dplyr = "1.1.0",
+  purrr = "1.0.0",
+  openxlsx = "4.2.5",
+  knitr = "1.40"
+)
+package_versions <- check_package_versions(required_versions)
+
+library(esqlabsR)
+library(ospsuite)
+library(dplyr)
+library(purrr)
+library(openxlsx)
+library(knitr)
+
+package_versions |>
+  knitr::kable(caption = "Software used for this simulation run")
+```
+
+# 2. Validate the generated configurations
+
+This check is intentionally performed before any PKML file is loaded. It catches
+missing workbooks, missing models, and scenario/application mismatches early.
+The infusion-duration table is also printed so the run record shows how the IV
+administrations were represented.
+
+```{r}
+#| label: validate-inputs
+
+configuration_files <- file.path(
+  CONFIG_DIR,
+  c(
+    "Applications.xlsx", "ModelParameters.xlsx", "Scenarios.xlsx",
+    "Individuals.xlsx", "Populations.xlsx"
+  )
+)
+assert_files_exist(c(PROJECT_CONFIG_FILE, configuration_files))
+
+scenario_table <- openxlsx::read.xlsx(
+  file.path(CONFIG_DIR, "Scenarios.xlsx"),
+  sheet = "Scenarios",
+  check.names = FALSE
+)
+if (nrow(scenario_table) == 0L) stop("Scenarios.xlsx contains no scenarios.")
+
+application_file <- file.path(CONFIG_DIR, "Applications.xlsx")
+application_sheets <- openxlsx::getSheetNames(application_file)
+if (!setequal(application_sheets, scenario_table$Scenario_name)) {
+  stop("Applications.xlsx and Scenarios.xlsx contain different scenario names.")
+}
+
+application_summary <- purrr::map_dfr(application_sheets, function(sheet) {
+  application <- openxlsx::read.xlsx(
+    application_file,
+    sheet = sheet,
+    check.names = FALSE
+  )
+  normalized_names <- tolower(gsub("[.]", " ", names(application)))
+  infusion_column <- names(application)[normalized_names == "infusion time"]
+  if (length(infusion_column) != 1L || nrow(application) != 1L) {
+    stop("Could not identify a unique infusion time in sheet ", sheet, ".")
+  }
+  data.frame(
+    Scenario = sheet,
+    Dose_mg_kg = application$Value[[1]],
+    Infusion_min = application[[infusion_column]][[1]],
+    stringsAsFactors = FALSE
+  )
+})
+
+project_settings <- openxlsx::read.xlsx(
+  PROJECT_CONFIG_FILE,
+  sheet = 1,
+  check.names = FALSE
+)
+model_folder_value <- project_settings$Value[
+  project_settings$Property == "modelFolder"
+]
+if (length(model_folder_value) != 1L) {
+  stop("ProjectConfiguration.xlsx must define modelFolder exactly once.")
+}
+model_folder <- normalizePath(
+  file.path(WORKFLOW_DIR, model_folder_value),
+  winslash = "/",
+  mustWork = TRUE
+)
+assert_files_exist(
+  file.path(model_folder, scenario_table$ModelFile),
+  "Scenario PKML model"
+)
+
+application_summary |>
+  count(.data$Infusion_min, name = "Scenarios") |>
+  arrange(.data$Infusion_min) |>
+  knitr::kable(
+    caption = "Administration durations entering the simulation run",
+    col.names = c("Infusion duration (min)", "Scenarios")
+  )
+```
+
+# 3. Create fully parameterized scenarios
+
+`readScenarioConfigurationFromExcel()` reads the scenario, model-parameter, and
+application definitions. `createScenarios()` then loads each PKML file and
+applies those definitions. At this point, the scenario objects contain the final
+parameters that will be simulated.
+
+`ignoreVersionCheck = TRUE` prevents an interactive prompt during Quarto
+rendering. The explicit version check above and the saved session record make
+that choice traceable.
+
+```{r}
+#| label: create-scenarios
+
+project_configuration <- esqlabsR::createProjectConfiguration(
+  path = PROJECT_CONFIG_FILE,
+  ignoreVersionCheck = TRUE
+)
+
+scenario_configurations <- esqlabsR::readScenarioConfigurationFromExcel(
+  scenarioNames = NULL,
+  projectConfiguration = project_configuration
+)
+
+if (!setequal(names(scenario_configurations), scenario_table$Scenario_name)) {
+  stop("esqlabsR did not create the expected scenario configurations.")
+}
+
+scenarios <- esqlabsR::createScenarios(
+  scenarioConfigurations = scenario_configurations
+)
+
+scenario_inventory <- data.frame(
+  Scenario = names(scenarios),
+  Status = "Created",
+  stringsAsFactors = FALSE
+)
+scenario_inventory |>
+  knitr::kable(caption = "Parameterized scenarios ready to simulate")
+```
+
+# 4. Run and save the simulations
+
+The run uses at most eight logical cores and leaves one core available when
+possible. The negative-value check is disabled to match the manuscript run. If
+you change this setting, document the reason and retain the resulting warnings
+with the analysis record.
+
+This is the computationally intensive step. Do not interrupt R while the PKML
+models are running or while the output files are being written.
+
+```{r}
+#| label: run-and-save
+
+run_options <- ospsuite::SimulationRunOptions$new()
+run_options$checkForNegativeValues <- FALSE
+detected_cores <- parallel::detectCores(logical = TRUE)
+if (!is.finite(detected_cores)) detected_cores <- 2L
+run_options$numberOfCores <- min(8L, max(1L, detected_cores - 1L))
+
+run_started <- Sys.time()
+simulation_results <- esqlabsR::runScenarios(
+  scenarios = scenarios,
+  simulationRunOptions = run_options
+)
+run_finished <- Sys.time()
+
+output_folder <- esqlabsR::saveScenarioResults(
+  simulation_results,
+  project_configuration
+)
+output_folder <- normalizePath(
+  output_folder,
+  winslash = "/",
+  mustWork = TRUE
+)
+manifest_file <- record_simulation_run(output_folder, WORKFLOW_DIR)
+
+scenario_csv_files <- list.files(
+  output_folder,
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+scenario_csv_files <- scenario_csv_files[
+  !grepl("_population\\.csv$", scenario_csv_files)
+]
+
+if (length(scenario_csv_files) != nrow(scenario_table)) {
+  stop(
+    "Expected ", nrow(scenario_table), " scenario CSV files but found ",
+    length(scenario_csv_files), " in ", output_folder
+  )
+}
+
+run_summary <- data.frame(
+  Run_folder = basename(output_folder),
+  Scenarios = nrow(scenario_table),
+  Cores = run_options$numberOfCores,
+  Started = format(run_started, "%Y-%m-%d %H:%M:%S %Z"),
+  Finished = format(run_finished, "%Y-%m-%d %H:%M:%S %Z"),
+  Elapsed_minutes = round(
+    as.numeric(difftime(run_finished, run_started, units = "mins")),
+    2
+  ),
+  stringsAsFactors = FALSE
+)
+
+run_summary |>
+  knitr::kable(caption = "Completed a priori PBPK simulation run")
+```
+
+# 5. Confirm the handoff to Step 3
+
+The manifest contains only the timestamped folder name, not an absolute path, so
+the project remains portable. Step 3 combines the scenario CSV files in
+that folder, converts simulated concentrations from micromol/L to microgram/mL,
+and compares the predictions with the formatted observed data.
+
+```{r}
+#| label: verify-handoff
+
+data.frame(
+  Item = c("Selected run", "Manifest", "Scenario CSV files"),
+  Value = c(
+    basename(output_folder),
+    normalizePath(manifest_file, winslash = "/", mustWork = TRUE),
+    length(scenario_csv_files)
+  ),
+  check.names = FALSE
+) |>
+  knitr::kable(caption = "Files available for downstream analysis")
+
+ospsuite::clearMemory()
+```
+
+## R session information
+
+```{r}
+#| label: simulation-session-info
+
+sessionInfo()
+```

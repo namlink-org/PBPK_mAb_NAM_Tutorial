@@ -1,0 +1,1759 @@
+---
+title: "Step 1 Simulate and visualize Golimumab monkey PK study designs"
+author: NAMLink
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: true
+prefer-html: true
+---
+
+# Purpose
+
+This tutorial creates virtual monkey concentration-time profiles from the
+uncalibrated, a priori PBPK models prepared in `02_APriori_PBPK_Workflow`.
+It is the data-generation step for exploring reduced monkey PK study designs.
+
+**Golimumab** is used as the worked example. In the completed 02_APriori_PBPK_Workflow
+monkey evaluation, its predicted Cmax, AUC0-28d, and clearance were all within
+two-fold of the observed values, and it had the smallest average absolute
+log-fold error across those endpoints. The script does not fit the model to monkey PK data. It combines a
+50-animal monkey physiology population with uncertainty in six
+molecule-specific PBPK inputs, then simulates various doses for the candidate study
+designs.
+
+# What this tutorial varies
+
+The following configured Golimumab inputs are varied independently:
+
+1. FcRn binding affinity, `Kd (FcRn) in endosomal space`;
+2. drug-target binding affinity, `Kd`;
+3. drug-target dissociation rate, `koff`;
+4. drug-target complex internalization rate, `kint`;
+5. target degradation rate, `kdeg`; and
+6. target reference concentration.
+
+Two variability scenarios are evaluated: 30% and 50% coefficient of variation
+(CV). One hundred parameter sets are drawn at each variability level. Positive
+parameter values are drawn from lognormal
+distributions. The lognormal mean is adjusted so that the arithmetic mean of
+each distribution equals the configured a priori input. This prevents a
+larger CV from shifting the mean solely because of the lognormal
+transformation.
+
+The 100 parameter sets are crossed with the same 50 physiological monkeys.
+This creates 5,000 distinct physiology-parameter combinations per variability
+level. Each combination is requested at all five doses, for a nominal total of
+50,000 concentration-time profiles before sparse sampling. Any persistent
+PK-Sim failure is explicitly documented and excluded. The parameter draws are
+independent and represent a deliberately simple uncertainty scenario. They
+should be replaced by evidence-based distributions and correlations when
+those data are available.
+
+```{r}
+#| label: setup
+
+rm(list = ls())
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(esqlabsR)
+  library(ggplot2)
+  library(knitr)
+  library(ospsuite)
+  library(purrr)
+  library(readr)
+  library(scales)
+  library(tibble)
+  library(tidyr)
+})
+
+find_project_root <- function(start = getwd()) {
+  current <- normalizePath(start, winslash = "/", mustWork = TRUE)
+  repeat {
+    required <- c(
+      file.path(current, "01_Models"),
+      file.path(current, "02_APriori_PBPK_Workflow"),
+      file.path(current, "03_Study_Simulations")
+    )
+    if (all(dir.exists(required))) return(current)
+    parent <- dirname(current)
+    if (identical(parent, current)) {
+      stop("Could not locate the PBPK_mAb_NAM_Tutorial project root.")
+    }
+    current <- parent
+  }
+}
+
+assert_files_exist <- function(paths, description = "Required input") {
+  missing <- paths[!file.exists(paths)]
+  if (length(missing) > 0L) {
+    stop(description, " is missing: ", paste(missing, collapse = "; "))
+  }
+  invisible(paths)
+}
+
+PROJECT_ROOT <- find_project_root()
+APRIORI_DIR <- file.path(PROJECT_ROOT, "02_APriori_PBPK_Workflow")
+STUDY_DIR <- file.path(PROJECT_ROOT, "03_Study_Simulations")
+OUTPUT_DIR <- file.path(STUDY_DIR, "SimsOutputs")
+PROFILE_DIR <- file.path(OUTPUT_DIR, "SimulationProfiles")
+TABLE_DIR <- file.path(OUTPUT_DIR, "Tables")
+CHECKPOINT_DIR <- file.path(PROFILE_DIR, "Step1_Checkpoints")
+
+walk(
+  c(OUTPUT_DIR, PROFILE_DIR, TABLE_DIR, CHECKPOINT_DIR),
+  dir.create,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+set.seed(20260919)
+
+MOLECULES <- "Golimumab"
+SOURCE_SCENARIOS <- c(Golimumab = "Golimumab_Monkey_3_mpk")
+DOSES_MG_KG <- c(0.1, 1, 3, 10, 30)
+VARIABILITY_CV <- c(0.30, 0.50)
+N_PARAMETER_SETS <- as.integer(Sys.getenv(
+  "PBPK_TUTORIAL_N_PARAMETER_SETS",
+  unset = "100"
+))
+if (!is.finite(N_PARAMETER_SETS) || N_PARAMETER_SETS < 2L) {
+  stop("N_PARAMETER_SETS must be an integer of at least 2.")
+}
+N_POPULATION_ANIMALS <- 50L
+POPULATION_NAME <- "Monkey"
+POPULATION_SEED <- 20260919L
+
+# Run a limited number of parameter sets at a time. Each parameter set is
+# crossed with all 50 monkeys, so the default batch contains 500 profiles.
+# Completed batches are checkpointed and reused when the document is rerun.
+N_PARAMETER_SETS_PER_BATCH <- as.integer(Sys.getenv(
+  "PBPK_TUTORIAL_PARAMETER_SETS_PER_BATCH",
+  unset = "10"
+))
+if (!is.finite(N_PARAMETER_SETS_PER_BATCH) ||
+    N_PARAMETER_SETS_PER_BATCH < 1L) {
+  stop("N_PARAMETER_SETS_PER_BATCH must be a positive integer.")
+}
+
+FORCE_RERUN <- tolower(Sys.getenv(
+  "PBPK_TUTORIAL_FORCE_RERUN",
+  unset = "false"
+)) %in% c("true", "1", "yes")
+
+# One fixed sampling schedule is used in every candidate design.
+SPARSE_TIME_H <- sort(unique(
+  c(0.25, 1, 2, 4, 8, 1, 2, 6, 10, 14, 21, 28) *
+    c(rep(1, 5), rep(24, 7))
+))
+SAMPLING_TIME_H <- SPARSE_TIME_H
+
+MAB_PLASMA_OUTPUT_PATH <-
+  "Organism|PeripheralVenousBlood|mAb|Plasma (Peripheral Venous Blood)"
+
+PARAMETER_PATHS <- c(
+  `Kd (FcRn)` = "mAb|Kd (FcRn) in endosomal space",
+  `Target Kd` = "mAb-Target-InVitro|Kd",
+  koff = "mAb-Target-InVitro|koff",
+  kint = "Complex Internalization|kint",
+  kdeg = "Target degradation|kdeg",
+  `Target reference concentration` = "Target|Reference concentration"
+)
+
+DOSE_PATH <-
+  "Events|IV_Bolus|Application_1|ProtocolSchemaItem|DosePerBodyWeight"
+
+PROJECT_CONFIG_FILE <- file.path(APRIORI_DIR, "ProjectConfiguration.xlsx")
+POPULATION_CONFIG_FILE <- file.path(
+  APRIORI_DIR, "Configurations", "Populations.xlsx"
+)
+MONKEY_DATA_FILE <- file.path(PROJECT_ROOT, "00_Data", "Monkey", "mAb_data_clean.csv")
+OUTPUT_RDS <- file.path(
+  PROFILE_DIR,
+  "golimumab_monkey_population_uncertainty_profiles.rds"
+)
+PARAMETER_DRAW_FILE <- file.path(
+  TABLE_DIR,
+  "golimumab_monkey_parameter_sets.csv"
+)
+SETTINGS_FILE <- file.path(
+  TABLE_DIR,
+  "golimumab_monkey_simulation_settings.csv"
+)
+BASE_POPULATION_FILE <- file.path(
+  TABLE_DIR,
+  "golimumab_base_monkey_population.csv"
+)
+PROFILE_INDEX_FILE <- file.path(
+  TABLE_DIR,
+  "golimumab_crossed_profile_index.csv"
+)
+FAILED_PROFILE_FILE <- file.path(
+  TABLE_DIR,
+  "golimumab_failed_simulation_profiles.csv"
+)
+
+assert_files_exist(
+  c(PROJECT_CONFIG_FILE, POPULATION_CONFIG_FILE, MONKEY_DATA_FILE),
+  "A priori PBPK workflow input"
+)
+
+package_record <- tibble(
+  Package = c("R", "esqlabsR", "ospsuite"),
+  Version = c(
+    paste(R.version$major, R.version$minor, sep = "."),
+    as.character(packageVersion("esqlabsR")),
+    as.character(packageVersion("ospsuite"))
+  )
+)
+
+package_record |>
+  kable(caption = "Software versions recorded for the simulation run")
+```
+
+# Step 1 Read molecular weights
+
+Concentrations returned by the PBPK models are in micromol/L. Molecular weight
+is read from the prepared monkey dataset and used to convert concentrations to
+microgram/mL.
+
+```{r}
+#| label: molecular-weights
+
+mw_lookup <- read_csv(
+  MONKEY_DATA_FILE,
+  show_col_types = FALSE,
+  locale = locale(encoding = "UTF-8")
+) |>
+  transmute(
+    Molecule = as.character(.data$Molecule),
+    MW_g_mol = as.numeric(.data$Molecular.Weight)
+  ) |>
+  filter(.data$Molecule %in% MOLECULES) |>
+  group_by(.data$Molecule) |>
+  summarise(
+    MW_g_mol = median(.data$MW_g_mol, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+if (!setequal(mw_lookup$Molecule, MOLECULES) ||
+    any(!is.finite(mw_lookup$MW_g_mol)) ||
+    any(mw_lookup$MW_g_mol <= 0)) {
+  stop("A unique positive molecular weight was not found for each molecule.")
+}
+
+mw_lookup |>
+  kable(digits = 1, caption = "Molecular weights used for unit conversion")
+```
+
+# Step 2 Load the completed a priori Golimumab scenario
+
+The 3 mg/kg monkey scenario is used only as a fully parameterized model
+template. The script later changes the dose to each value in the five-dose
+grid. No observed PK data enter this step.
+
+```{r}
+#| label: load-scenarios
+
+project_configuration <- createProjectConfiguration(
+  path = PROJECT_CONFIG_FILE,
+  ignoreVersionCheck = TRUE
+)
+
+scenario_configurations <- readScenarioConfigurationFromExcel(
+  scenarioNames = unname(SOURCE_SCENARIOS),
+  projectConfiguration = project_configuration
+)
+
+scenarios <- createScenarios(
+  scenarioConfigurations = scenario_configurations
+)
+
+if (!setequal(names(scenarios), unname(SOURCE_SCENARIOS))) {
+  stop("The requested a priori monkey scenarios were not created.")
+}
+
+tibble(
+  Molecule = names(SOURCE_SCENARIOS),
+  Source_scenario = unname(SOURCE_SCENARIOS),
+  Role = "Concordant Objective 1 example"
+) |>
+  kable(caption = "A priori PBPK scenarios used as simulation templates")
+```
+
+# Step 3 Generate the 50-monkey physiological population
+
+`Populations.xlsx` defines the Monkey population with 50 individuals, equal
+probabilities of female and male animals, and a body-weight range of 3-7 kg.
+The script reads that configuration through `esqlabsR`, supplies a fixed
+PK-Sim population seed, and generates the population once. The same 50
+physiological animals are then reused for both uncertainty levels and all five
+doses.
+
+Using a fixed seed is important here. Without it, PK-Sim would generate a new
+population each time the document is rendered, making changes between runs
+harder to interpret.
+
+```{r}
+#| label: create-monkey-population
+
+population_characteristics <- readPopulationCharacteristicsFromXLS(
+  XLSpath = POPULATION_CONFIG_FILE,
+  populationName = POPULATION_NAME,
+  sheet = "Demographics"
+)
+
+if (population_characteristics$numberOfIndividuals !=
+    N_POPULATION_ANIMALS) {
+  stop(
+    "The Monkey row in Populations.xlsx must define ",
+    N_POPULATION_ANIMALS, " individuals."
+  )
+}
+
+population_characteristics$seed <- POPULATION_SEED
+population_result <- createPopulation(
+  populationCharacteristics = population_characteristics
+)
+base_population <- population_result$population
+base_population_table <- populationToDataFrame(base_population)
+
+if (base_population$count != N_POPULATION_ANIMALS ||
+    nrow(base_population_table) != N_POPULATION_ANIMALS) {
+  stop("The generated monkey population does not contain 50 individuals.")
+}
+
+write_csv(base_population_table, BASE_POPULATION_FILE)
+
+weight_column <- grep(
+  "^Organism\\|Weight( \\[kg\\])?$",
+  names(base_population_table),
+  value = TRUE
+)
+if (length(weight_column) != 1L) {
+  stop("The generated population must contain one organism-weight column.")
+}
+
+tibble(
+  Population = POPULATION_NAME,
+  Animals = base_population$count,
+  Seed_requested = POPULATION_SEED,
+  Seed_used = population_result$seed,
+  Weight_min_kg = min(base_population_table[[weight_column]]),
+  Weight_max_kg = max(base_population_table[[weight_column]])
+) |>
+  kable(
+    digits = 3,
+    caption = "Generated physiological monkey population"
+  )
+```
+
+# Step 4 Verify parameter and dose paths
+
+The path strings below must identify exactly one non-formula parameter in each
+model. The script stops rather than guessing when a model path changes.
+
+```{r}
+#| label: verify-model-paths
+
+inspect_scenario_inputs <- function(molecule) {
+  scenario_name <- unname(SOURCE_SCENARIOS[[molecule]])
+  simulation <- scenarios[[scenario_name]]$simulation
+  all_paths <- c(PARAMETER_PATHS, `Dose per body weight` = DOSE_PATH)
+
+  map_dfr(names(all_paths), function(label) {
+    path <- unname(all_paths[[label]])
+    matches <- getAllParametersMatching(
+      paths = path,
+      container = simulation
+    )
+    if (length(matches) != 1L) {
+      stop(
+        "Expected one match for ", label, " in ", molecule,
+        "; found ", length(matches), "."
+      )
+    }
+    if (isExplicitFormulaByPath(path = path, simulation = simulation)) {
+      stop(label, " is formula-defined in ", molecule, ".")
+    }
+    value <- getQuantityValuesByPath(
+      quantityPaths = path,
+      simulation = simulation
+    )
+    if (length(value) != 1L || !is.finite(value) || value <= 0) {
+      stop("Expected one positive finite value for ", label, " in ", molecule)
+    }
+    tibble(
+      Molecule = molecule,
+      Input = label,
+      Path = path,
+      Configured_value_internal = as.numeric(value),
+      Display_unit = as.character(matches[[1]]$unit)
+    )
+  })
+}
+
+configured_inputs <- map_dfr(MOLECULES, inspect_scenario_inputs)
+
+configured_inputs |>
+  mutate(Configured_value_internal = signif(.data$Configured_value_internal, 5)) |>
+  kable(caption = "Validated model inputs before uncertainty is added")
+```
+
+# Step 5 Draw 100 positive PBPK parameter sets
+
+The function uses the standard relationship between lognormal CV and log-scale
+standard deviation. Subtracting half the log-scale variance from `log(mean)`
+keeps the arithmetic mean at the configured value.
+
+```{r}
+#| label: draw-parameters
+
+draw_lognormal_mean_cv <- function(n, arithmetic_mean, cv) {
+  if (!is.finite(arithmetic_mean) || arithmetic_mean <= 0) {
+    stop("A lognormal arithmetic mean must be positive and finite.")
+  }
+  if (!is.finite(cv) || cv < 0) stop("CV must be non-negative and finite.")
+  sdlog <- sqrt(log1p(cv^2))
+  meanlog <- log(arithmetic_mean) - 0.5 * sdlog^2
+  rlnorm(n, meanlog = meanlog, sdlog = sdlog)
+}
+
+parameter_baseline <- configured_inputs |>
+  filter(.data$Input %in% names(PARAMETER_PATHS)) |>
+  select(
+    .data$Molecule,
+    Parameter = .data$Input,
+    Typical_value_internal = .data$Configured_value_internal,
+    .data$Display_unit
+  )
+
+parameter_draws_long <- crossing(
+  Molecule = MOLECULES,
+  Variability_CV = VARIABILITY_CV,
+  ParameterSetId = seq_len(N_PARAMETER_SETS)
+) |>
+  left_join(parameter_baseline, by = "Molecule") |>
+  group_by(.data$Molecule, .data$Variability_CV, .data$Parameter) |>
+  mutate(
+    Parameter_value_internal = draw_lognormal_mean_cv(
+      n(),
+      first(.data$Typical_value_internal),
+      first(.data$Variability_CV)
+    )
+  ) |>
+  ungroup()
+
+parameter_draws <- parameter_draws_long |>
+  select(
+    .data$Molecule, .data$Variability_CV, .data$ParameterSetId,
+    .data$Parameter, .data$Parameter_value_internal
+  ) |>
+  pivot_wider(
+    names_from = .data$Parameter,
+    values_from = .data$Parameter_value_internal
+  ) |>
+  arrange(
+    .data$Molecule, .data$Variability_CV, .data$ParameterSetId
+  )
+
+draw_check <- parameter_draws_long |>
+  group_by(
+    .data$Molecule, .data$Variability_CV, .data$Parameter,
+    .data$Typical_value_internal, .data$Display_unit
+  ) |>
+  summarise(
+    Draw_mean = mean(.data$Parameter_value_internal),
+    Draw_CV = sd(.data$Parameter_value_internal) /
+      mean(.data$Parameter_value_internal),
+    .groups = "drop"
+  ) |>
+  mutate(
+    Mean_to_configured_ratio = .data$Draw_mean /
+      .data$Typical_value_internal
+  )
+
+draw_check |>
+  mutate(
+    across(
+      c(
+        .data$Typical_value_internal, .data$Draw_mean,
+        .data$Draw_CV, .data$Mean_to_configured_ratio
+      ),
+      ~ signif(.x, 4)
+    )
+  ) |>
+  kable(caption = "Realized parameter-draw distributions")
+```
+
+# Step 6 Cross physiology with parameter uncertainty and run the model
+
+At each uncertainty level, the 100 parameter sets are crossed with all 50
+physiological monkeys. The resulting population contains 5,000 rows:
+
+`100 Golimumab parameter sets x 50 physiological monkeys = 5,000 profiles`.
+
+The six molecule-specific input values are stored as population parameters.
+For reliability, the 5,000 combinations are not submitted to PK-Sim as one
+large job. They are divided into batches of 10 parameter sets crossed with all
+50 monkeys (500 profiles per batch). The same crossed population is reused at
+each dose. This preserves the identity of each physiology-parameter
+combination across the dose grid while keeping the study design parallel-group
+when profiles are resampled later.
+
+Every completed batch is immediately saved under `Step1_Checkpoints`. If a
+render is interrupted, a subsequent render validates and reuses those files
+before continuing with the first unfinished batch. Set the environment
+variable `PBPK_TUTORIAL_FORCE_RERUN=true` only when all simulations should be
+recomputed. A smaller batch can be requested, if needed, through
+`PBPK_TUTORIAL_PARAMETER_SETS_PER_BATCH`.
+
+If a profile still produces no output after the single-core retries, its
+identifiers and error are written to `golimumab_failed_simulation_profiles.csv`
+and that profile is excluded. On a subsequent render, profiles already listed
+in this file are skipped rather than submitted again. The final inventory
+reports the resulting profile count for every variability-by-dose cell.
+
+The model runs on its configured time grid. Each full profile is then linearly
+interpolated to the fixed sparse schedule used throughout this tutorial.
+
+```{r}
+#| label: build-crossed-populations
+
+build_crossed_population <- function(variability_cv) {
+  cell_draws <- parameter_draws |>
+    filter(.data$Variability_CV == variability_cv) |>
+    arrange(.data$ParameterSetId)
+
+  if (nrow(cell_draws) != N_PARAMETER_SETS) {
+    stop("The parameter-set table is incomplete at CV = ", variability_cv)
+  }
+
+  profile_index <- crossing(
+    ParameterSetId = cell_draws$ParameterSetId,
+    PopulationIndividualId = base_population_table$IndividualId
+  ) |>
+    arrange(.data$ParameterSetId, .data$PopulationIndividualId) |>
+    mutate(
+      SimulationIndividualId = seq.int(0L, n() - 1L),
+      VirtualProfileId = .data$SimulationIndividualId + 1L,
+      Variability_CV = variability_cv,
+      .before = 1
+    )
+
+  population_rows <- match(
+    profile_index$PopulationIndividualId,
+    base_population_table$IndividualId
+  )
+  expanded_table <- base_population_table[
+    population_rows,
+    ,
+    drop = FALSE
+  ]
+  expanded_table$IndividualId <- profile_index$SimulationIndividualId
+
+  for (parameter_name in names(PARAMETER_PATHS)) {
+    values_by_set <- setNames(
+      cell_draws[[parameter_name]],
+      cell_draws$ParameterSetId
+    )
+    expanded_table[[PARAMETER_PATHS[[parameter_name]]]] <- unname(
+      values_by_set[as.character(profile_index$ParameterSetId)]
+    )
+  }
+
+  crossed_population <- populationFromDataFrame(expanded_table)
+  expected_count <- N_PARAMETER_SETS * N_POPULATION_ANIMALS
+  if (crossed_population$count != expected_count) {
+    stop("The crossed population does not contain ", expected_count, " rows.")
+  }
+
+  list(
+    population = crossed_population,
+    index = profile_index,
+    table = expanded_table
+  )
+}
+
+crossed_populations <- setNames(
+  map(VARIABILITY_CV, build_crossed_population),
+  as.character(VARIABILITY_CV)
+)
+
+crossed_profile_index <- map_dfr(
+  crossed_populations,
+  "index",
+  .id = "Variability_key"
+) |>
+  select(-.data$Variability_key)
+
+write_csv(crossed_profile_index, PROFILE_INDEX_FILE)
+
+crossed_profile_index |>
+  count(.data$Variability_CV, name = "Physiology_parameter_combinations") |>
+  mutate(`Variability CV (%)` = 100 * .data$Variability_CV) |>
+  select(`Variability CV (%)`, .data$Physiology_parameter_combinations) |>
+  kable(caption = "Crossed simulation populations")
+```
+
+```{r}
+#| label: run-population-simulations
+
+interpolate_to_sampling_times <- function(time_h, concentration_umol_l) {
+  keep <- is.finite(time_h) & is.finite(concentration_umol_l)
+  time_h <- as.numeric(time_h[keep])
+  concentration_umol_l <- as.numeric(concentration_umol_l[keep])
+  ord <- order(time_h)
+  time_h <- time_h[ord]
+  concentration_umol_l <- concentration_umol_l[ord]
+  if (length(unique(time_h)) < 2L) {
+    stop("A simulated profile contains fewer than two distinct times.")
+  }
+  approx(
+    x = time_h,
+    y = concentration_umol_l,
+    xout = SAMPLING_TIME_H,
+    method = "linear",
+    rule = 2,
+    ties = mean
+  )$y
+}
+
+scenario_name <- unname(SOURCE_SCENARIOS[["Golimumab"]])
+simulation <- scenarios[[scenario_name]]$simulation
+old_output_paths <- map_chr(simulation$outputSelections$allOutputs, "path")
+clearOutputs(simulation = simulation)
+addOutputs(
+  quantitiesOrPaths = MAB_PLASMA_OUTPUT_PATH,
+  simulation = simulation
+)
+
+baseline_dose_internal <- getQuantityValuesByPath(
+  quantityPaths = DOSE_PATH,
+  simulation = simulation
+)
+baseline_dose_mg_kg <- 3
+mw <- mw_lookup$MW_g_mol[mw_lookup$Molecule == "Golimumab"]
+
+run_options <- SimulationRunOptions$new()
+run_options$checkForNegativeValues <- FALSE
+detected_cores <- parallel::detectCores(logical = TRUE)
+if (!is.finite(detected_cores)) detected_cores <- 2L
+run_options$numberOfCores <- min(8L, max(1L, detected_cores - 1L))
+
+simulation_grid <- crossing(
+  Variability_CV = VARIABILITY_CV,
+  Dose_mg_kg = DOSES_MG_KG
+)
+
+run_started <- Sys.time()
+
+make_population_subset <- function(population_bundle, simulation_ids) {
+  simulation_ids <- as.integer(simulation_ids)
+  subset_index <- population_bundle$index |>
+    filter(.data$SimulationIndividualId %in% simulation_ids) |>
+    arrange(match(.data$SimulationIndividualId, simulation_ids)) |>
+    mutate(BatchIndividualId = seq.int(0L, n() - 1L))
+
+  if (!setequal(subset_index$SimulationIndividualId, simulation_ids)) {
+    stop("A requested simulation individual is absent from the population.")
+  }
+
+  table_rows <- match(
+    subset_index$SimulationIndividualId,
+    population_bundle$table$IndividualId
+  )
+  subset_table <- population_bundle$table[table_rows, , drop = FALSE]
+  subset_table$IndividualId <- subset_index$BatchIndividualId
+
+  list(
+    population = populationFromDataFrame(subset_table),
+    index = subset_index
+  )
+}
+
+run_population_subset <- function(population_bundle, simulation_ids,
+                                  options) {
+  subset_bundle <- make_population_subset(
+    population_bundle,
+    simulation_ids
+  )
+  results <- runSimulations(
+    simulations = simulation,
+    population = subset_bundle$population,
+    simulationRunOptions = options
+  )[[1]]
+
+  output <- getOutputValues(
+    simulationResults = results,
+    quantitiesOrPaths = MAB_PLASMA_OUTPUT_PATH
+  )$data |>
+    as_tibble() |>
+    transmute(
+      BatchIndividualId = as.integer(.data$IndividualId),
+      ModelTime_h = as.numeric(.data$Time) / 60,
+      Conc_umol_L = as.numeric(.data[[MAB_PLASMA_OUTPUT_PATH]])
+    ) |>
+    left_join(
+      subset_bundle$index |>
+        select(.data$BatchIndividualId, .data$SimulationIndividualId),
+      by = "BatchIndividualId"
+    ) |>
+    select(-.data$BatchIndividualId)
+
+  if (any(is.na(output$SimulationIndividualId))) {
+    stop("PK-Sim returned an individual identifier not in the submitted batch.")
+  }
+
+  rm(results)
+  invisible(gc())
+  output
+}
+
+complete_profile_ids <- function(output) {
+  if (nrow(output) == 0L) return(integer())
+  output |>
+    filter(
+      is.finite(.data$ModelTime_h),
+      is.finite(.data$Conc_umol_L)
+    ) |>
+    group_by(.data$SimulationIndividualId) |>
+    summarise(
+      N_time = n_distinct(.data$ModelTime_h),
+      First_time_h = min(.data$ModelTime_h),
+      Last_time_h = max(.data$ModelTime_h),
+      .groups = "drop"
+    ) |>
+    filter(
+      .data$N_time >= 2L,
+      .data$First_time_h <= min(SAMPLING_TIME_H),
+      .data$Last_time_h >= max(SAMPLING_TIME_H)
+    ) |>
+    pull(.data$SimulationIndividualId)
+}
+
+retry_options <- SimulationRunOptions$new()
+retry_options$checkForNegativeValues <- FALSE
+retry_options$numberOfCores <- 1L
+
+run_complete_batch <- function(population_bundle, expected_ids, cv_value,
+                               dose_value, batch_number) {
+  initial_error <- NULL
+  retry_errors <- character()
+  output <- tryCatch(
+    run_population_subset(population_bundle, expected_ids, run_options),
+    error = function(e) {
+      initial_error <<- conditionMessage(e)
+      tibble(
+        SimulationIndividualId = integer(),
+        ModelTime_h = numeric(),
+        Conc_umol_L = numeric()
+      )
+    }
+  )
+
+  completed_ids <- complete_profile_ids(output)
+  missing_ids <- setdiff(expected_ids, completed_ids)
+
+  if (length(missing_ids) == length(expected_ids)) {
+    message(
+      "  Batch ", batch_number,
+      " produced no complete profiles; retrying the complete batch with one core."
+    )
+    output <- tryCatch(
+      run_population_subset(population_bundle, expected_ids, retry_options),
+      error = function(e) {
+        initial_error <<- paste(
+          c(initial_error, "Single-core batch retry", conditionMessage(e)),
+          collapse = "; "
+        )
+        output
+      }
+    )
+    completed_ids <- complete_profile_ids(output)
+    missing_ids <- setdiff(expected_ids, completed_ids)
+  }
+
+  if (length(missing_ids) > 0L) {
+    message(
+      "  Batch ", batch_number, " returned ", length(missing_ids),
+      " incomplete profile(s); retrying those profiles one at a time ",
+      "with one core."
+    )
+
+    retry_output <- map_dfr(missing_ids, function(simulation_id) {
+      tryCatch(
+        run_population_subset(
+          population_bundle,
+          simulation_id,
+          retry_options
+        ),
+        error = function(e) {
+          retry_errors[[as.character(simulation_id)]] <<- conditionMessage(e)
+          tibble(
+            SimulationIndividualId = integer(),
+            ModelTime_h = numeric(),
+            Conc_umol_L = numeric()
+          )
+        }
+      )
+    })
+
+    output <- bind_rows(
+      output |> filter(.data$SimulationIndividualId %in% completed_ids),
+      retry_output
+    ) |>
+      distinct(
+        .data$SimulationIndividualId,
+        .data$ModelTime_h,
+        .keep_all = TRUE
+      )
+  }
+
+  still_missing <- setdiff(expected_ids, complete_profile_ids(output))
+  failed_index <- tibble()
+  if (length(still_missing) > 0L) {
+    fallback_error <- if (is.null(initial_error)) {
+      "Incomplete output after single-profile retry"
+    } else {
+      paste("Initial batch error:", initial_error)
+    }
+    failed_index <- population_bundle$index |>
+      filter(.data$SimulationIndividualId %in% still_missing) |>
+      transmute(
+        Timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        Variability_CV = cv_value,
+        Dose_mg_kg = dose_value,
+        Batch = batch_number,
+        SimulationIndividualId = .data$SimulationIndividualId,
+        VirtualProfileId = .data$VirtualProfileId,
+        ParameterSetId = .data$ParameterSetId,
+        PopulationIndividualId = .data$PopulationIndividualId,
+        Error = unname(retry_errors[
+          as.character(.data$SimulationIndividualId)
+        ])
+      ) |>
+      mutate(
+        Error = if_else(is.na(.data$Error), fallback_error, .data$Error)
+      )
+    write_csv(
+      failed_index,
+      FAILED_PROFILE_FILE,
+      append = file.exists(FAILED_PROFILE_FILE)
+    )
+    message(
+      "  Skipping ", length(still_missing),
+      " persistently incomplete profile(s) in batch ", batch_number,
+      ". Their identifiers were recorded in ", FAILED_PROFILE_FILE, "."
+    )
+  }
+
+  successful_ids <- intersect(expected_ids, complete_profile_ids(output))
+  completed_output <- output |>
+    filter(.data$SimulationIndividualId %in% successful_ids)
+  attr(completed_output, "failed_profiles") <- failed_index
+  completed_output
+}
+
+checkpoint_path <- function(cv_value, dose_value, batch_number) {
+  file.path(
+    CHECKPOINT_DIR,
+    sprintf(
+      "golimumab_cv%02d_dose%s_batch%03d.rds",
+      round(100 * cv_value),
+      gsub("\\.", "p", format(dose_value, scientific = FALSE, trim = TRUE)),
+      batch_number
+    )
+  )
+}
+
+sampled_profiles_are_complete <- function(profiles,
+                                          expected_virtual_profile_ids) {
+  required_columns <- c("VirtualProfileId", "Time_h", "Conc_ug_mL")
+  if (!is.data.frame(profiles) ||
+      !all(required_columns %in% names(profiles)) ||
+      !setequal(
+        unique(profiles$VirtualProfileId),
+        expected_virtual_profile_ids
+      ) ||
+      nrow(profiles) !=
+        length(expected_virtual_profile_ids) * length(SAMPLING_TIME_H) ||
+      any(!is.finite(profiles$Conc_ug_mL)) ||
+      any(profiles$Conc_ug_mL < 0)) {
+    return(FALSE)
+  }
+
+  profile_times <- split(profiles$Time_h, profiles$VirtualProfileId)
+  all(vapply(
+    profile_times,
+    function(x) identical(sort(as.numeric(x)), SAMPLING_TIME_H),
+    logical(1)
+  ))
+}
+
+checkpoint_is_valid <- function(checkpoint, expected_ids,
+                                expected_virtual_profile_ids,
+                                expected_parameter_sets,
+                                expected_parameter_values,
+                                cv_value, dose_value) {
+  is.list(checkpoint) &&
+    identical(checkpoint$format_version, 1L) &&
+    isTRUE(all.equal(checkpoint$variability_cv, cv_value)) &&
+    isTRUE(all.equal(checkpoint$dose_mg_kg, dose_value)) &&
+    identical(
+      sort(as.integer(checkpoint$parameter_set_ids)),
+      sort(as.integer(expected_parameter_sets))
+    ) &&
+    isTRUE(all.equal(
+      checkpoint$parameter_values,
+      expected_parameter_values,
+      check.attributes = FALSE
+    )) &&
+    isTRUE(all.equal(
+      checkpoint$configured_inputs,
+      configured_inputs,
+      check.attributes = FALSE
+    )) &&
+    identical(
+      sort(as.integer(checkpoint$simulation_individual_ids)),
+      sort(as.integer(expected_ids))
+    ) &&
+    identical(as.numeric(checkpoint$sampling_time_h), SAMPLING_TIME_H) &&
+    sampled_profiles_are_complete(
+      checkpoint$profiles,
+      expected_virtual_profile_ids
+    )
+}
+
+save_checkpoint <- function(checkpoint, path) {
+  temporary_path <- tempfile(
+    pattern = "step1_checkpoint_",
+    tmpdir = CHECKPOINT_DIR,
+    fileext = ".rds"
+  )
+  saveRDS(checkpoint, temporary_path)
+  copied <- file.copy(temporary_path, path, overwrite = TRUE)
+  unlink(temporary_path)
+  if (!copied) stop("Could not save checkpoint: ", path)
+  invisible(path)
+}
+
+parameter_set_batches <- split(
+  seq_len(N_PARAMETER_SETS),
+  ceiling(seq_len(N_PARAMETER_SETS) / N_PARAMETER_SETS_PER_BATCH)
+)
+completed_profile_batches <- list()
+skipped_profile_records <- list()
+
+empty_failed_profiles <- tibble(
+  Timestamp = character(),
+  Variability_CV = numeric(),
+  Dose_mg_kg = numeric(),
+  Batch = integer(),
+  SimulationIndividualId = integer(),
+  VirtualProfileId = integer(),
+  ParameterSetId = integer(),
+  PopulationIndividualId = integer(),
+  Error = character()
+)
+
+known_failed_profiles <- if (file.exists(FAILED_PROFILE_FILE)) {
+  read_csv(
+    FAILED_PROFILE_FILE,
+    show_col_types = FALSE,
+    locale = locale(encoding = "UTF-8")
+  ) |>
+    mutate(
+      # readr may parse this column as POSIXct when the log is non-empty.
+      # Keep it as display text so it combines cleanly with newly recorded
+      # failures and with the typed empty template.
+      Timestamp = as.character(.data$Timestamp),
+      Variability_CV = as.numeric(.data$Variability_CV),
+      Dose_mg_kg = as.numeric(.data$Dose_mg_kg),
+      SimulationIndividualId = as.integer(.data$SimulationIndividualId)
+    ) |>
+    distinct(
+      .data$Variability_CV,
+      .data$Dose_mg_kg,
+      .data$SimulationIndividualId,
+      .keep_all = TRUE
+    )
+} else {
+  empty_failed_profiles
+}
+
+for (cell_number in seq_len(nrow(simulation_grid))) {
+  cv_value <- simulation_grid$Variability_CV[[cell_number]]
+  dose_value <- simulation_grid$Dose_mg_kg[[cell_number]]
+  population_bundle <- crossed_populations[[as.character(cv_value)]]
+
+  message(
+    "Golimumab: ", 100 * cv_value, "% CV at ", dose_value,
+    " mg/kg; processing ", length(parameter_set_batches), " batches."
+  )
+
+  setParameterValuesByPath(
+    parameterPaths = DOSE_PATH,
+    values = baseline_dose_internal * dose_value / baseline_dose_mg_kg,
+    simulation = simulation
+  )
+
+  for (batch_number in seq_along(parameter_set_batches)) {
+    parameter_set_ids <- parameter_set_batches[[batch_number]]
+    expected_parameter_values <- parameter_draws |>
+      filter(
+        .data$Variability_CV == cv_value,
+        .data$ParameterSetId %in% parameter_set_ids
+      ) |>
+      arrange(.data$ParameterSetId)
+    nominal_index <- population_bundle$index |>
+      filter(.data$ParameterSetId %in% parameter_set_ids) |>
+      arrange(.data$ParameterSetId, .data$PopulationIndividualId)
+
+    known_batch_failures <- known_failed_profiles |>
+      filter(
+        .data$Variability_CV == cv_value,
+        .data$Dose_mg_kg == dose_value,
+        .data$SimulationIndividualId %in%
+          nominal_index$SimulationIndividualId
+      )
+    if (nrow(known_batch_failures) > 0L) {
+      message(
+        "  Batch ", batch_number, ": skipping ",
+        nrow(known_batch_failures),
+        " previously documented failed profile(s)."
+      )
+      skipped_profile_records[[paste(
+        "known", cv_value, dose_value, batch_number, sep = "_"
+      )]] <- known_batch_failures
+    }
+
+    expected_index <- nominal_index |>
+      filter(
+        !.data$SimulationIndividualId %in%
+          known_batch_failures$SimulationIndividualId
+      )
+    expected_ids <- expected_index$SimulationIndividualId
+    expected_virtual_profile_ids <- expected_index$VirtualProfileId
+    checkpoint_file <- checkpoint_path(
+      cv_value,
+      dose_value,
+      batch_number
+    )
+    checkpoint <- NULL
+
+    if (file.exists(checkpoint_file) && !FORCE_RERUN) {
+      checkpoint <- tryCatch(
+        readRDS(checkpoint_file),
+        error = function(e) NULL
+      )
+    }
+
+    if (!is.null(checkpoint) && checkpoint_is_valid(
+      checkpoint,
+      expected_ids,
+      expected_virtual_profile_ids,
+      parameter_set_ids,
+      expected_parameter_values,
+      cv_value,
+      dose_value
+    )) {
+      message(
+        "  Batch ", batch_number, "/", length(parameter_set_batches),
+        " loaded from checkpoint."
+      )
+      sampled_profiles <- checkpoint$profiles
+    } else {
+      message(
+        "  Batch ", batch_number, "/", length(parameter_set_batches),
+        ": parameter sets ", min(parameter_set_ids), "-",
+        max(parameter_set_ids), "."
+      )
+
+      output <- run_complete_batch(
+        population_bundle,
+        expected_ids,
+        cv_value,
+        dose_value,
+        batch_number
+      )
+
+      newly_failed_profiles <- attr(output, "failed_profiles")
+      if (!is.null(newly_failed_profiles) &&
+          nrow(newly_failed_profiles) > 0L) {
+        skipped_profile_records[[paste(
+          "new", cv_value, dose_value, batch_number, sep = "_"
+        )]] <- newly_failed_profiles
+        expected_index <- expected_index |>
+          filter(
+            !.data$SimulationIndividualId %in%
+              newly_failed_profiles$SimulationIndividualId
+          )
+        expected_ids <- expected_index$SimulationIndividualId
+        expected_virtual_profile_ids <- expected_index$VirtualProfileId
+      }
+
+      sampled_profiles <- output |>
+        group_by(.data$SimulationIndividualId) |>
+        group_modify(~ tibble(
+          Time_h = SAMPLING_TIME_H,
+          Conc_umol_L = interpolate_to_sampling_times(
+            .x$ModelTime_h,
+            .x$Conc_umol_L
+          )
+        )) |>
+        ungroup() |>
+        left_join(
+          expected_index,
+          by = "SimulationIndividualId"
+        ) |>
+        transmute(
+          Molecule = "Golimumab",
+          Variability_CV = cv_value,
+          VirtualProfileId = .data$VirtualProfileId,
+          ParameterSetId = .data$ParameterSetId,
+          PopulationIndividualId = .data$PopulationIndividualId,
+          Dose_mg_kg = dose_value,
+          Time_h = .data$Time_h,
+          Conc_ug_mL = .data$Conc_umol_L * mw / 1000
+        )
+
+      if (!sampled_profiles_are_complete(
+        sampled_profiles,
+        expected_virtual_profile_ids
+      )) {
+        stop("Batch validation failed before checkpointing.")
+      }
+
+      checkpoint <- list(
+        format_version = 1L,
+        molecule = "Golimumab",
+        variability_cv = cv_value,
+        dose_mg_kg = dose_value,
+        batch = batch_number,
+        parameter_set_ids = parameter_set_ids,
+        parameter_values = expected_parameter_values,
+        configured_inputs = configured_inputs,
+        simulation_individual_ids = expected_ids,
+        sampling_time_h = SAMPLING_TIME_H,
+        profiles = sampled_profiles,
+        completed_at = Sys.time()
+      )
+      save_checkpoint(checkpoint, checkpoint_file)
+      message("    Saved checkpoint: ", basename(checkpoint_file))
+
+      rm(output)
+      invisible(gc())
+    }
+
+    batch_key <- paste(
+      cv_value,
+      dose_value,
+      batch_number,
+      sep = "_"
+    )
+    completed_profile_batches[[batch_key]] <- sampled_profiles
+  }
+}
+
+virtual_profiles <- bind_rows(completed_profile_batches) |>
+  arrange(
+    .data$Variability_CV,
+    .data$Dose_mg_kg,
+    .data$VirtualProfileId,
+    .data$Time_h
+  )
+
+skipped_profiles <- bind_rows(
+  c(list(empty_failed_profiles), skipped_profile_records)
+) |>
+  distinct(
+    .data$Variability_CV,
+    .data$Dose_mg_kg,
+    .data$SimulationIndividualId,
+    .keep_all = TRUE
+  ) |>
+  arrange(
+    .data$Variability_CV,
+    .data$Dose_mg_kg,
+    .data$SimulationIndividualId
+  )
+
+run_finished <- Sys.time()
+
+clearOutputs(simulation = simulation)
+walk(
+  old_output_paths,
+  ~ addOutputs(quantitiesOrPaths = .x, simulation = simulation)
+)
+
+if (any(!is.finite(virtual_profiles$Conc_ug_mL)) ||
+    any(virtual_profiles$Conc_ug_mL < 0)) {
+  stop("A simulated concentration is missing, non-finite, or negative.")
+}
+```
+
+# Step 7 Verify and save the simulation record
+
+The expected profile count is checked before the consolidated simulation
+record is written. The per-batch checkpoints have already been saved, so they
+remain available even if this validation or a later analysis step fails. The
+final R object contains the concentration profiles, the exact parameter draws,
+and the settings needed to reproduce the candidate-design summaries below.
+
+```{r}
+#| label: save-results
+
+profile_inventory <- virtual_profiles |>
+  distinct(
+    .data$Molecule, .data$Variability_CV,
+    .data$VirtualProfileId, .data$Dose_mg_kg
+  ) |>
+  count(
+    .data$Molecule, .data$Variability_CV, .data$Dose_mg_kg,
+    name = "Virtual_profiles"
+  )
+
+expected_profiles_per_cell <- N_PARAMETER_SETS * N_POPULATION_ANIMALS
+expected_inventory <- crossing(
+  Molecule = MOLECULES,
+  Variability_CV = VARIABILITY_CV,
+  Dose_mg_kg = DOSES_MG_KG
+) |>
+  left_join(
+    skipped_profiles |>
+      count(
+        .data$Variability_CV,
+        .data$Dose_mg_kg,
+        name = "Skipped_profiles"
+      ),
+    by = c("Variability_CV", "Dose_mg_kg")
+  ) |>
+  mutate(
+    Skipped_profiles = replace_na(.data$Skipped_profiles, 0L),
+    Expected_profiles = expected_profiles_per_cell - .data$Skipped_profiles
+  )
+
+validated_inventory <- expected_inventory |>
+  left_join(
+    profile_inventory,
+    by = c("Molecule", "Variability_CV", "Dose_mg_kg")
+  )
+
+if (any(is.na(validated_inventory$Virtual_profiles)) ||
+    any(validated_inventory$Virtual_profiles !=
+        validated_inventory$Expected_profiles)) {
+  stop("At least one variability-by-dose cell has an unexpected profile count.")
+}
+
+expected_rows <- sum(validated_inventory$Expected_profiles) *
+  length(SAMPLING_TIME_H)
+if (nrow(virtual_profiles) != expected_rows) {
+  stop(
+    "Expected ", expected_rows, " sampled concentration rows after documented ",
+    "exclusions but found ", nrow(virtual_profiles), "."
+  )
+}
+
+simulation_record <- list(
+  virtual_profiles = virtual_profiles,
+  parameter_draws = parameter_draws_long,
+  base_population = base_population_table,
+  crossed_profile_index = crossed_profile_index,
+  skipped_profiles = skipped_profiles,
+  configured_inputs = configured_inputs,
+  settings = list(
+    seed = 20260919L,
+    molecules = MOLECULES,
+    source_scenarios = SOURCE_SCENARIOS,
+    doses_mg_kg = DOSES_MG_KG,
+    variability_cv = VARIABILITY_CV,
+    n_population_animals = N_POPULATION_ANIMALS,
+    n_parameter_sets = N_PARAMETER_SETS,
+    parameter_sets_per_batch = N_PARAMETER_SETS_PER_BATCH,
+    checkpoint_directory = CHECKPOINT_DIR,
+    force_rerun = FORCE_RERUN,
+    nominal_profiles_per_variability_dose = expected_profiles_per_cell,
+    population_name = POPULATION_NAME,
+    population_seed = population_result$seed,
+    sampling_time_h = SAMPLING_TIME_H,
+    parameter_paths = PARAMETER_PATHS,
+    dose_path = DOSE_PATH,
+    plasma_output_path = MAB_PLASMA_OUTPUT_PATH,
+    run_started = run_started,
+    run_finished = run_finished,
+    package_record = package_record
+  )
+)
+
+saveRDS(simulation_record, OUTPUT_RDS)
+write_csv(parameter_draws_long, PARAMETER_DRAW_FILE)
+
+settings_table <- tribble(
+  ~Setting, ~Value,
+  "Molecules", paste(MOLECULES, collapse = ", "),
+  "Dose grid (mg/kg)", paste(DOSES_MG_KG, collapse = ", "),
+  "Input variability CV", paste(100 * VARIABILITY_CV, collapse = ", "),
+  "Physiological monkeys", as.character(N_POPULATION_ANIMALS),
+  "Parameter sets per variability level", as.character(N_PARAMETER_SETS),
+  "Parameter sets per simulation batch", as.character(N_PARAMETER_SETS_PER_BATCH),
+  "Checkpoint reuse enabled", as.character(!FORCE_RERUN),
+  "Crossed profiles per variability/dose", as.character(expected_profiles_per_cell),
+  "Successful concentration-time profiles", as.character(
+    sum(validated_inventory$Virtual_profiles)
+  ),
+  "Documented skipped profiles", as.character(nrow(skipped_profiles)),
+  "Sampling times (h)", paste(SAMPLING_TIME_H, collapse = ", "),
+  "Parameter-draw seed", "20260919",
+  "Population seed", as.character(population_result$seed),
+  "Elapsed minutes in current render", sprintf(
+    "%.2f",
+    as.numeric(difftime(run_finished, run_started, units = "mins"))
+  )
+)
+write_csv(settings_table, SETTINGS_FILE)
+
+validated_inventory |>
+  mutate(`Variability CV (%)` = 100 * .data$Variability_CV) |>
+  select(
+    .data$Molecule, `Variability CV (%)`, .data$Dose_mg_kg,
+    .data$Virtual_profiles, .data$Skipped_profiles
+  ) |>
+  kable(caption = "Completed virtual-profile inventory")
+
+tibble(
+  Output = c(
+    "Simulation record", "Parameter draws", "Settings",
+    "Base monkey population", "Crossed profile index",
+    "Resumable simulation checkpoints"
+  ),
+  Path = c(
+    OUTPUT_RDS, PARAMETER_DRAW_FILE, SETTINGS_FILE,
+    BASE_POPULATION_FILE, PROFILE_INDEX_FILE, CHECKPOINT_DIR
+  )
+) |>
+  kable(caption = "Simulation files written by Step 1")
+```
+
+# Step 8 Define the candidate study designs
+
+The virtual profiles are now resampled to represent candidate exploratory
+monkey PK studies. The candidate designs contain:
+
+- 2 dose groups: 1 and 10 mg/kg;
+- 3 dose groups: 1, 3, and 10 mg/kg; or
+- 5 dose groups: 0.1, 1, 3, 10, and 30 mg/kg.
+
+Each design is evaluated with 2, 3, or 6 animals per dose group at the same
+fixed sampling times used above. All combinations are repeated under the 30%
+and 50% input-variability scenarios.
+
+For each candidate design, physiology-parameter profiles are sampled with
+replacement from the relevant variability- and dose-specific pool. Each
+sampled profile represents one possible study animal with one physiological
+parameterization and one Golimumab parameter set. The plotted line is the
+median across replicate study-group means, and the ribbon spans the 5th to
+95th percentiles of those replicate means. The ribbon therefore describes the
+sampling distribution of a candidate study-group mean. It is not an
+individual-animal prediction interval or a confidence interval for an
+estimated model parameter.
+
+No candidate is compared with a rich population, top-down model, observed
+data, or a designated true model in this step.
+
+```{r}
+#| label: define-study-designs
+
+set.seed(20260920)
+
+N_STUDY_REPLICATES <- as.integer(Sys.getenv(
+  "PBPK_TUTORIAL_N_REPLICATES",
+  unset = "1000"
+))
+if (!is.finite(N_STUDY_REPLICATES) || N_STUDY_REPLICATES < 20L) {
+  stop("N_STUDY_REPLICATES must be an integer of at least 20.")
+}
+
+ANIMALS_PER_GROUP <- c(2L, 3L, 6L)
+DESIGN_DOSES <- list(
+  `2 dose groups` = c(1, 10),
+  `3 dose groups` = c(1, 3, 10),
+  `5 dose groups` = c(0.1, 1, 3, 10, 30)
+)
+
+FIGURE_DIR <- file.path(OUTPUT_DIR, "Figures", "Step1_Golimumab")
+dir.create(FIGURE_DIR, recursive = TRUE, showWarnings = FALSE)
+
+PLOT_TABLE_FILE <- file.path(
+  TABLE_DIR,
+  "golimumab_candidate_design_prediction_intervals.csv"
+)
+DESIGN_TABLE_FILE <- file.path(
+  TABLE_DIR,
+  "golimumab_candidate_design_inventory.csv"
+)
+
+study_theme <- theme_bw(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r}
+#| label: candidate-design-inventory
+
+required_doses <- sort(unique(unlist(DESIGN_DOSES)))
+if (!setequal(sort(unique(virtual_profiles$Dose_mg_kg)), required_doses)) {
+  stop("The simulated dose grid does not match the candidate designs.")
+}
+if (any(!is.finite(virtual_profiles$Conc_ug_mL)) ||
+    any(virtual_profiles$Conc_ug_mL < 0)) {
+  stop("The virtual-profile table contains invalid concentrations.")
+}
+
+design_inventory <- crossing(
+  Design = names(DESIGN_DOSES),
+  N_per_group = ANIMALS_PER_GROUP
+) |>
+  mutate(
+    Dose_groups = map_int(.data$Design, ~ length(DESIGN_DOSES[[.x]])),
+    Doses_mg_kg = map_chr(
+      .data$Design,
+      ~ paste(DESIGN_DOSES[[.x]], collapse = ", ")
+    ),
+    Total_animals = .data$Dose_groups * .data$N_per_group
+  ) |>
+  arrange(.data$Dose_groups, .data$N_per_group)
+
+write_csv(design_inventory, DESIGN_TABLE_FILE)
+
+design_inventory |>
+  select(
+    .data$Design, .data$Doses_mg_kg,
+    .data$N_per_group, .data$Total_animals
+  ) |>
+  kable(caption = "Candidate monkey PK study designs")
+```
+
+# Step 9 Resample replicate candidate studies
+
+The following function draws the requested number of animals from a virtual
+profile pool and calculates the arithmetic mean concentration at every fixed
+sampling time. Repeating that operation gives the distribution of study-group
+mean profiles that could arise under the candidate design.
+
+```{r}
+#| label: resample-candidate-studies
+
+summarize_replicate_means <- function(profile_pool, n_per_group) {
+  profile_ids <- sort(unique(profile_pool$VirtualProfileId))
+  if (length(profile_ids) < 2L) {
+    stop("The virtual profile pool is incomplete.")
+  }
+
+  sampled_ids <- matrix(
+    sample(
+      profile_ids,
+      size = N_STUDY_REPLICATES * n_per_group,
+      replace = TRUE
+    ),
+    nrow = N_STUDY_REPLICATES,
+    ncol = n_per_group
+  )
+
+  concentration_matrix <- profile_pool |>
+    arrange(.data$VirtualProfileId, .data$Time_h) |>
+    select(.data$VirtualProfileId, .data$Time_h, .data$Conc_ug_mL) |>
+    pivot_wider(
+      names_from = .data$Time_h,
+      values_from = .data$Conc_ug_mL,
+      names_sort = TRUE
+    ) |>
+    arrange(match(.data$VirtualProfileId, profile_ids))
+
+  time_values <- as.numeric(names(concentration_matrix)[-1])
+  concentration_values <- as.matrix(concentration_matrix[, -1])
+  row_index <- match(as.vector(sampled_ids), profile_ids)
+  sampled_array <- array(
+    concentration_values[row_index, , drop = FALSE],
+    dim = c(N_STUDY_REPLICATES, n_per_group, length(time_values))
+  )
+  replicate_means <- apply(sampled_array, c(1, 3), mean)
+
+  tibble(
+    Time_h = time_values,
+    Median_ug_mL = apply(replicate_means, 2, median),
+    P05_ug_mL = apply(
+      replicate_means, 2, quantile, probs = 0.05, names = FALSE
+    ),
+    P95_ug_mL = apply(
+      replicate_means, 2, quantile, probs = 0.95, names = FALSE
+    )
+  )
+}
+
+scenario_grid <- crossing(
+  Molecule = sort(unique(virtual_profiles$Molecule)),
+  Variability_CV = sort(unique(virtual_profiles$Variability_CV)),
+  Design = names(DESIGN_DOSES),
+  N_per_group = ANIMALS_PER_GROUP
+)
+
+prediction_intervals <- pmap_dfr(
+  scenario_grid,
+  function(Molecule, Variability_CV, Design, N_per_group) {
+    molecule_value <- Molecule
+    cv_value <- Variability_CV
+    design_value <- Design
+    n_value <- N_per_group
+
+    map_dfr(DESIGN_DOSES[[design_value]], function(dose) {
+      profile_pool <- virtual_profiles |>
+        filter(
+          .data$Molecule == molecule_value,
+          .data$Variability_CV == cv_value,
+          .data$Dose_mg_kg == dose
+        )
+
+      summarize_replicate_means(profile_pool, n_value) |>
+        mutate(
+          Molecule = molecule_value,
+          Variability_CV = cv_value,
+          Design = design_value,
+          N_per_group = n_value,
+          Dose_mg_kg = dose,
+          N_study_replicates = N_STUDY_REPLICATES,
+          .before = 1
+        )
+    })
+  }
+)
+
+if (any(prediction_intervals$P05_ug_mL >
+        prediction_intervals$Median_ug_mL) ||
+    any(prediction_intervals$Median_ug_mL >
+        prediction_intervals$P95_ug_mL)) {
+  stop("At least one prediction interval is not ordered correctly.")
+}
+
+write_csv(prediction_intervals, PLOT_TABLE_FILE)
+```
+
+# Step 10 Plot the candidate-design prediction intervals
+
+Each panel row is a dose-group design and each column is an animal count per
+dose group. Dose is encoded by color. All panels use the same fixed sampling
+schedule, so changes in ribbon width reflect input variability and group size,
+not a change in sampling times.
+
+```{r}
+#| label: create-design-plots
+
+design_levels <- names(DESIGN_DOSES)
+dose_palette <- c(
+  `0.1` = "#332288",
+  `1` = "#117733",
+  `3` = "#DDCC77",
+  `10` = "#CC6677",
+  `30` = "#882255"
+)
+
+make_design_plot <- function(molecule, variability_cv) {
+  plot_data <- prediction_intervals |>
+    filter(
+      .data$Molecule == molecule,
+      .data$Variability_CV == variability_cv
+    ) |>
+    mutate(
+      Design = factor(.data$Design, levels = design_levels),
+      Animals = factor(
+        .data$N_per_group,
+        levels = ANIMALS_PER_GROUP,
+        labels = paste(ANIMALS_PER_GROUP, "animals per dose")
+      ),
+      Dose = factor(
+        as.character(.data$Dose_mg_kg),
+        levels = names(dose_palette)
+      )
+    )
+
+  smallest_positive <- min(
+    c(plot_data$P05_ug_mL, plot_data$Median_ug_mL),
+    na.rm = TRUE
+  )
+  if (!is.finite(smallest_positive) || smallest_positive <= 0) {
+    positive_values <- c(
+      plot_data$P05_ug_mL,
+      plot_data$Median_ug_mL
+    )
+    smallest_positive <- min(
+      positive_values[positive_values > 0],
+      na.rm = TRUE
+    )
+  }
+  floor_value <- smallest_positive / 10000
+
+  plot_data <- plot_data |>
+    mutate(
+      Plot_P05 = pmax(.data$P05_ug_mL, floor_value),
+      Plot_P95 = pmax(.data$P95_ug_mL, floor_value),
+      Plot_median = pmax(.data$Median_ug_mL, floor_value)
+    )
+
+  ggplot(
+    plot_data,
+    aes(
+      x = .data$Time_h / 24,
+      y = .data$Plot_median,
+      colour = .data$Dose,
+      fill = .data$Dose,
+      group = .data$Dose
+    )
+  ) +
+    geom_ribbon(
+      aes(ymin = .data$Plot_P05, ymax = .data$Plot_P95),
+      alpha = 0.16,
+      linewidth = 0
+    ) +
+    geom_line(linewidth = 0.7) +
+    geom_point(size = 1.1) +
+    facet_grid(rows = vars(.data$Design), cols = vars(.data$Animals)) +
+    scale_y_log10(labels = label_number()) +
+    scale_colour_manual(values = dose_palette, drop = FALSE) +
+    scale_fill_manual(values = dose_palette, drop = FALSE) +
+    scale_x_continuous(
+      breaks = c(0, 1, 7, 14, 21, 28),
+      limits = c(0, 28),
+      expand = expansion(mult = c(0.01, 0.02))
+    ) +
+    labs(
+      title = paste0(
+        molecule, ": candidate study-mean concentration profiles"
+      ),
+      subtitle = paste0(
+        100 * variability_cv,
+        "% CV in six PBPK inputs; ribbons show 5th-95th percentiles"
+      ),
+      x = "Time after dose (days)",
+      y = "Study-group mean plasma concentration (ug/mL)",
+      colour = "Dose (mg/kg)",
+      fill = "Dose (mg/kg)"
+    ) +
+    study_theme
+}
+
+plot_index <- crossing(
+  Molecule = sort(unique(prediction_intervals$Molecule)),
+  Variability_CV = sort(unique(prediction_intervals$Variability_CV))
+) |>
+  mutate(
+    Figure_file = file.path(
+      FIGURE_DIR,
+      paste0(
+        tolower(.data$Molecule), "_",
+        sprintf("%02d", round(100 * .data$Variability_CV)),
+        "pct_candidate_design_prediction_intervals.png"
+      )
+    )
+  )
+
+plots <- pmap(
+  plot_index,
+  function(Molecule, Variability_CV, Figure_file) {
+    plot <- make_design_plot(Molecule, Variability_CV)
+    ggsave(
+      filename = Figure_file,
+      plot = plot,
+      width = 14,
+      height = 10,
+      dpi = 320,
+      bg = "white"
+    )
+    plot
+  }
+)
+names(plots) <- paste(
+  plot_index$Molecule,
+  paste0(100 * plot_index$Variability_CV, "%")
+)
+```
+
+## Golimumab: 30% input variability
+
+```{r}
+#| label: golimumab-30
+#| fig-width: 14
+#| fig-height: 10
+plots[["Golimumab 30%"]]
+```
+
+## Golimumab: 50% input variability
+
+```{r}
+#| label: golimumab-50
+#| fig-width: 14
+#| fig-height: 10
+plots[["Golimumab 50%"]]
+```
+
+# Step 11 Record the outputs
+
+The saved tables make every plotted interval available without extracting
+values from the figures. The simulation record retains the virtual profiles,
+parameter draws, configured inputs, run settings, and software versions.
+
+```{r}
+#| label: record-all-outputs
+
+tibble(
+  Output = c(
+    "Simulation record",
+    "Parameter draws",
+    "Base monkey population",
+    "Crossed profile index",
+    "Simulation settings",
+    "Resumable simulation checkpoints",
+    "Failed-profile diagnostic log (only if needed)",
+    "Prediction-interval plotting table",
+    "Candidate-design inventory",
+    "PNG figures"
+  ),
+  Location = c(
+    OUTPUT_RDS,
+    PARAMETER_DRAW_FILE,
+    BASE_POPULATION_FILE,
+    PROFILE_INDEX_FILE,
+    SETTINGS_FILE,
+    CHECKPOINT_DIR,
+    FAILED_PROFILE_FILE,
+    PLOT_TABLE_FILE,
+    DESIGN_TABLE_FILE,
+    FIGURE_DIR
+  )
+) |>
+  kable(caption = "Step 1 outputs")
+
+plot_index |>
+  mutate(`Variability CV (%)` = 100 * .data$Variability_CV) |>
+  select(.data$Molecule, `Variability CV (%)`, .data$Figure_file) |>
+  kable(caption = "Saved candidate-design figures")
+
+clearMemory()
+```
+
+## R session information
+
+```{r}
+#| label: session-info
+sessionInfo()
+```

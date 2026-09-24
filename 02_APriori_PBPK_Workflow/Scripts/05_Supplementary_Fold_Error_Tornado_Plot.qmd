@@ -1,0 +1,443 @@
+---
+title: "Supplementary figure: A priori PBPK prediction fold errors"
+author: NAMLink
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: true
+prefer-html: true
+---
+
+# Purpose
+
+This supplementary script creates one six-panel tornado plot from the complete
+scenario-level results embedded in `03_Process_Sims_Outputs.html`. It does not
+rerun a PBPK simulation or recalculate a PK endpoint.
+
+The rows compare monkey and human predictions. The columns show AUC0-28d,
+Cmax, and clearance. Each horizontal bar represents one molecule-dose
+scenario and begins at a fold error of 1. Underprediction extends to the left
+and overprediction extends to the right on a base-2 logarithmic scale.
+
+```{r}
+#| label: setup
+
+rm(list = ls())
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(knitr)
+  library(purrr)
+  library(readr)
+  library(rvest)
+  library(scales)
+  library(tibble)
+  library(tidyr)
+  library(xml2)
+})
+
+find_project_root <- function(start = getwd()) {
+  current <- normalizePath(start, winslash = "/", mustWork = TRUE)
+  repeat {
+    required <- c(
+      file.path(current, "01_Models"),
+      file.path(current, "02_APriori_PBPK_Workflow")
+    )
+    if (all(dir.exists(required))) return(current)
+    parent <- dirname(current)
+    if (identical(parent, current)) {
+      stop("Could not locate the PBPK_mAb_NAM_Tutorial project root.")
+    }
+    current <- parent
+  }
+}
+
+PROJECT_ROOT <- find_project_root()
+WORKFLOW_DIR <- file.path(PROJECT_ROOT, "02_APriori_PBPK_Workflow")
+SCRIPT_DIR <- file.path(WORKFLOW_DIR, "Scripts")
+OUTPUT_DIR <- file.path(WORKFLOW_DIR, "SimsOutputs")
+FIGURE_DIR <- file.path(OUTPUT_DIR, "Figures")
+TABLE_DIR <- file.path(OUTPUT_DIR, "Tables")
+
+walk(
+  c(OUTPUT_DIR, FIGURE_DIR, TABLE_DIR),
+  dir.create,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+INPUT_HTML <- file.path(SCRIPT_DIR, "03_Process_Sims_Outputs.html")
+OUTPUT_FIGURE <- file.path(
+  FIGURE_DIR,
+  "Supplement_Fold_Error_Tornado_Monkey_Human.png"
+)
+OUTPUT_TABLE <- file.path(
+  TABLE_DIR,
+  "Supplement_Fold_Error_Tornado_Data.csv"
+)
+
+if (!file.exists(INPUT_HTML)) {
+  stop(
+    "The completed Step 3 HTML report is missing: ", INPUT_HTML,
+    ". Render 03_Process_Sims_Outputs.qmd before running this supplement."
+  )
+}
+
+SPECIES_LEVELS <- c("Monkey", "Human")
+METRIC_LEVELS <- c("AUC0-28d", "Cmax", "Clearance")
+METRIC_COLUMNS <- c(
+  `AUC0-28d` = "FE_AUC0_28d",
+  Cmax = "FE_Cmax",
+  Clearance = "FE_Clearance"
+)
+
+SPECIES_COLORS <- c(
+  Monkey = "#79B8D4",
+  Human = "#79B8D4"
+)
+```
+
+# Step 1 Extract the completed scenario-level results
+
+The source report contains a table captioned *Complete observed and predicted
+scenario-level PK metrics*. The script selects that table by its caption rather
+than by table position, then validates the columns used in the figure.
+
+```{r}
+#| label: extract-html-results
+
+html_document <- read_html(INPUT_HTML)
+html_tables <- html_elements(html_document, "table")
+table_captions <- map_chr(html_tables, function(table_node) {
+  caption_node <- html_element(table_node, "caption")
+  if (inherits(caption_node, "xml_missing")) "" else html_text2(caption_node)
+})
+
+source_caption <- "Complete observed and predicted scenario-level PK metrics"
+source_table_index <- which(table_captions == source_caption)
+
+if (length(source_table_index) != 1L) {
+  stop(
+    "Expected exactly one HTML table captioned '", source_caption,
+    "'; found ", length(source_table_index), "."
+  )
+}
+
+scenario_metrics <- html_table(
+  html_tables[[source_table_index]],
+  fill = TRUE,
+  convert = TRUE
+) |>
+  as_tibble()
+
+required_columns <- c(
+  "Molecule", "Species", "Dose", unname(METRIC_COLUMNS)
+)
+missing_columns <- setdiff(required_columns, names(scenario_metrics))
+if (length(missing_columns) > 0L) {
+  stop(
+    "The source table is missing required columns: ",
+    paste(missing_columns, collapse = ", "), "."
+  )
+}
+
+scenario_metrics <- scenario_metrics |>
+  transmute(
+    Molecule = as.character(.data$Molecule),
+    Species = as.character(.data$Species),
+    Dose_mg_kg = as.numeric(.data$Dose),
+    FE_AUC0_28d = as.numeric(.data$FE_AUC0_28d),
+    FE_Cmax = as.numeric(.data$FE_Cmax),
+    FE_Clearance = as.numeric(.data$FE_Clearance)
+  )
+
+if (!setequal(unique(scenario_metrics$Species), SPECIES_LEVELS)) {
+  stop("The source table must contain both Monkey and Human results only.")
+}
+
+duplicate_scenarios <- scenario_metrics |>
+  count(
+    .data$Species, .data$Molecule, .data$Dose_mg_kg,
+    name = "Records"
+  ) |>
+  filter(.data$Records != 1L)
+
+if (nrow(duplicate_scenarios) > 0L) {
+  stop("The source table contains duplicate species-molecule-dose records.")
+}
+
+tibble(
+  Source = INPUT_HTML,
+  Source_table = source_caption,
+  Scenarios = nrow(scenario_metrics),
+  Monkey_scenarios = sum(scenario_metrics$Species == "Monkey"),
+  Human_scenarios = sum(scenario_metrics$Species == "Human")
+) |>
+  kable(caption = "Validated source for the supplementary figure")
+```
+
+# Step 2 Prepare directional fold errors
+
+Fold error is defined as predicted divided by observed. The plotted coordinate
+is `log2(fold error)`, so 0.5 and 2 are equally distant from the reference value
+of 1. Labels retain the fold error on its original scale.
+
+```{r}
+#| label: prepare-fold-errors
+
+format_dose <- function(x) {
+  format(
+    x,
+    trim = TRUE,
+    scientific = FALSE,
+    drop0trailing = TRUE
+  )
+}
+
+fold_error_data <- scenario_metrics |>
+  pivot_longer(
+    cols = all_of(unname(METRIC_COLUMNS)),
+    names_to = "Metric_column",
+    values_to = "Fold_error"
+  ) |>
+  mutate(
+    Metric = names(METRIC_COLUMNS)[
+      match(.data$Metric_column, METRIC_COLUMNS)
+    ],
+    Species = factor(.data$Species, levels = SPECIES_LEVELS),
+    Metric = factor(.data$Metric, levels = METRIC_LEVELS),
+    Dose_label = format_dose(.data$Dose_mg_kg),
+    Scenario_label = paste0(
+      .data$Molecule, "  |  ", .data$Dose_label, " mg/kg"
+    ),
+    Scenario_key = paste(.data$Species, .data$Scenario_label, sep = "::"),
+    Log2_fold_error = log2(.data$Fold_error),
+    Fold_error_label = number(
+      .data$Fold_error,
+      accuracy = 0.01,
+      trim = TRUE
+    )
+  )
+
+invalid_fold_errors <- fold_error_data |>
+  filter(!is.finite(.data$Fold_error) | .data$Fold_error <= 0)
+if (nrow(invalid_fold_errors) > 0L) {
+  stop(
+    "All fold errors must be finite and positive; found ",
+    nrow(invalid_fold_errors), " invalid values."
+  )
+}
+
+scenario_levels <- fold_error_data |>
+  distinct(
+    .data$Species, .data$Molecule, .data$Dose_mg_kg,
+    .data$Scenario_key
+  ) |>
+  arrange(
+    .data$Species,
+    .data$Molecule,
+    .data$Dose_mg_kg
+  ) |>
+  pull(.data$Scenario_key)
+
+fold_error_data <- fold_error_data |>
+  mutate(
+    Scenario_key = factor(
+      .data$Scenario_key,
+      levels = rev(scenario_levels)
+    ),
+    Label_x = .data$Log2_fold_error +
+      if_else(.data$Log2_fold_error >= 0, 0.08, -0.08),
+    Label_hjust = if_else(.data$Log2_fold_error >= 0, 0, 1)
+  )
+
+write_csv(
+  fold_error_data |>
+    transmute(
+      Species = as.character(.data$Species),
+      Metric = as.character(.data$Metric),
+      .data$Molecule,
+      .data$Dose_mg_kg,
+      .data$Fold_error,
+      .data$Log2_fold_error
+    ),
+  OUTPUT_TABLE
+)
+```
+
+# Step 3 Create the six-panel tornado plot
+
+```{r}
+#| label: fold-error-tornado
+#| fig-width: 18
+#| fig-height: 19
+#| fig-cap: "Fold-errors from PBPK model predictions without calibration with in vivo PK data for monkeys and humans. Fold error equals predicted divided by observed; bars extend from 1 on a base-2 logarithmic scale, and the shaded region and dashed lines indicate the 0.5- to 2-fold interval."
+
+maximum_log2_error <- max(abs(fold_error_data$Log2_fold_error))
+log2_limit <- max(1, ceiling(maximum_log2_error))
+log2_breaks <- seq(-log2_limit, log2_limit, by = 1)
+fold_break_labels <- number(
+  2^log2_breaks,
+  accuracy = 0.001,
+  trim = TRUE
+)
+
+tornado_plot <- ggplot(
+  fold_error_data,
+  aes(
+    x = .data$Log2_fold_error,
+    y = .data$Scenario_key,
+    fill = .data$Species
+  )
+) +
+  annotate(
+    "rect",
+    xmin = log2(0.5),
+    xmax = log2(2),
+    ymin = -Inf,
+    ymax = Inf,
+    fill = "#D7EAF3",
+    alpha = 0.52
+  ) +
+  geom_vline(
+    xintercept = log2(c(0.5, 2)),
+    color = "#5F7F8E",
+    linewidth = 0.65,
+    linetype = "22"
+  ) +
+  geom_vline(xintercept = 0, color = "#222222", linewidth = 0.8) +
+  geom_col(
+    width = 0.70,
+    color = "white",
+    linewidth = 0.22,
+    alpha = 0.92
+  ) +
+  geom_text(
+    aes(
+      x = .data$Label_x,
+      label = .data$Fold_error_label,
+      hjust = .data$Label_hjust
+    ),
+    size = 3.15,
+    color = "#202020"
+  ) +
+  facet_grid(
+    rows = vars(.data$Species),
+    cols = vars(.data$Metric),
+    scales = "free_y",
+    space = "free_y"
+  ) +
+  scale_fill_manual(values = SPECIES_COLORS, guide = "none") +
+  scale_x_continuous(
+    breaks = log2_breaks,
+    labels = fold_break_labels,
+    expand = expansion(mult = 0)
+  ) +
+  scale_y_discrete(
+    labels = function(x) sub("^[^:]+::", "", x),
+    drop = TRUE
+  ) +
+  coord_cartesian(
+    xlim = c(-log2_limit - 0.45, log2_limit + 0.45),
+    clip = "off"
+  ) +
+  labs(
+    title = "A priori PBPK prediction fold errors in monkeys and humans",
+    subtitle = paste(
+      "Predicted / observed; bars begin at 1.",
+      "Shading and dashed lines show the 0.5- to 2-fold interval."
+    ),
+    x = "Fold error (base-2 logarithmic scale)",
+    y = NULL
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    text = element_text(color = "#202020"),
+    plot.title = element_text(
+      face = "bold",
+      size = 22,
+      margin = margin(b = 7)
+    ),
+    plot.subtitle = element_text(
+      size = 14,
+      color = "#444444",
+      margin = margin(b = 13)
+    ),
+    strip.background = element_rect(
+      fill = "grey90",
+      color = "grey45",
+      linewidth = 0.65
+    ),
+    strip.text.x = element_text(
+      face = "bold",
+      size = 15,
+      margin = margin(8, 5, 8, 5)
+    ),
+    strip.text.y = element_text(
+      face = "bold",
+      size = 15,
+      margin = margin(8, 7, 8, 7)
+    ),
+    axis.text.x = element_text(size = 11.5, color = "#303030"),
+    axis.text.y = element_text(size = 10.5, color = "#303030"),
+    axis.title.x = element_text(
+      face = "bold",
+      size = 14,
+      margin = margin(t = 10)
+    ),
+    panel.grid.major.x = element_line(color = "#DFE9EE", linewidth = 0.45),
+    panel.grid.major.y = element_line(color = "#EDF3F6", linewidth = 0.35),
+    panel.grid.minor = element_blank(),
+    panel.spacing.x = grid::unit(0.55, "lines"),
+    panel.spacing.y = grid::unit(0.55, "lines"),
+    panel.border = element_rect(color = "#607D8B", linewidth = 0.65),
+    plot.margin = margin(15, 28, 15, 15)
+  )
+
+png_device <- if (requireNamespace("ragg", quietly = TRUE)) {
+  ragg::agg_png
+} else {
+  "png"
+}
+
+ggsave(
+  filename = OUTPUT_FIGURE,
+  plot = tornado_plot,
+  device = png_device,
+  width = 18,
+  height = 19,
+  units = "in",
+  dpi = 320,
+  bg = "white",
+  limitsize = FALSE
+)
+
+tornado_plot
+```
+
+# Output record
+
+```{r}
+#| label: output-record
+
+tibble(
+  Output = c(
+    "Six-panel fold-error tornado figure",
+    "Plotting data extracted from the completed HTML"
+  ),
+  Path = c(OUTPUT_FIGURE, OUTPUT_TABLE)
+) |>
+  kable(caption = "Supplementary figure outputs")
+```
+
+## R session information
+
+```{r}
+#| label: session-info
+sessionInfo()
+```

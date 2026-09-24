@@ -1,0 +1,1200 @@
+---
+title: "Step 4: Explore one-way sensitivity of predicted clearance"
+author: "NAMLink"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+editor: source
+---
+
+<style>
+.cell-output-display { overflow-x: auto; }
+table { font-size: 0.88rem; }
+.quarto-figure img, img { max-width: 100%; height: auto; }
+</style>
+
+# Purpose
+
+This optional extension asks how three target-related parameters influence the
+**a priori predicted clearance**:
+
+- target reference concentration;
+- target-complex internalization rate (`kint`); and
+- target degradation rate (`kdeg`).
+
+Each parameter is changed one at a time to 0.1 or 10 times its a priori value.
+All other model inputs remain fixed. The completed simulation from Tutorial 2
+is the 1-fold reference, so no redundant 1-fold sensitivity run is generated.
+
+This is a local, one-way sensitivity analysis. It is not parameter fitting, a
+global sensitivity analysis, or a statement about uncertainty distributions.
+
+## Prerequisites
+
+Run Tutorials 1 and 2 first. This script needs the configuration workbooks, the
+PK-Sim/MoBi model files, and the simulation run recorded by Tutorial 2. Tutorial
+3 is not required because this script calculates its reference clearance from
+the same saved simulation CSV files.
+
+# 1. Set up portable paths and analysis choices
+
+```{r}
+#| label: setup
+
+find_project_root_bootstrap <- function(start = getwd()) {
+  current <- normalizePath(start, winslash = "/", mustWork = TRUE)
+  repeat {
+    required <- file.path(
+      current,
+      c("00_Data", "01_Models", "02_APriori_PBPK_Workflow")
+    )
+    if (all(dir.exists(required))) return(current)
+    parent <- dirname(current)
+    if (identical(parent, current)) stop("Project root not found.")
+    current <- parent
+  }
+}
+
+PROJECT_ROOT <- find_project_root_bootstrap()
+WORKFLOW_DIR <- file.path(PROJECT_ROOT, "02_APriori_PBPK_Workflow")
+DATA_DIR <- file.path(PROJECT_ROOT, "00_Data")
+CONFIG_DIR <- file.path(WORKFLOW_DIR, "Configurations")
+
+# Tutorial-local functions. Keeping these definitions in this file makes
+# the Quarto tutorial independently runnable without a separate R helper.
+# The Quarto files source this file to keep the tutorial narrative readable.
+# Functions here perform validation, path resolution, result import, and the
+# noncompartmental calculations used in both the primary and sensitivity
+# analyses. No function fits or calibrates the PBPK model to observed PK data.
+
+find_project_root <- function(start = getwd()) {
+  current <- normalizePath(start, winslash = "/", mustWork = TRUE)
+
+  repeat {
+    expected <- file.path(
+      current,
+      c("00_Data", "01_Models", "02_APriori_PBPK_Workflow")
+    )
+    if (all(dir.exists(expected))) return(current)
+
+    parent <- dirname(current)
+    if (identical(parent, current)) {
+      stop(
+        "Could not locate the project root. Start R from this project or one ",
+        "of its subfolders. Expected 00_Data/, 01_Models/, and ",
+        "02_APriori_PBPK_Workflow/ in the project root."
+      )
+    }
+    current <- parent
+  }
+}
+
+check_package_versions <- function(required) {
+  installed <- vapply(
+    names(required),
+    requireNamespace,
+    quietly = TRUE,
+    FUN.VALUE = logical(1)
+  )
+  if (any(!installed)) {
+    stop(
+      "Install the following R package(s) before continuing: ",
+      paste(names(required)[!installed], collapse = ", ")
+    )
+  }
+
+  versions <- vapply(
+    names(required),
+    function(package) as.character(utils::packageVersion(package)),
+    FUN.VALUE = character(1)
+  )
+  too_old <- vapply(
+    names(required),
+    function(package) {
+      utils::compareVersion(versions[[package]], required[[package]]) < 0
+    },
+    FUN.VALUE = logical(1)
+  )
+  if (any(too_old)) {
+    details <- paste0(
+      names(required)[too_old], " >= ", required[too_old],
+      " (installed: ", versions[too_old], ")"
+    )
+    stop("Package version requirement not met: ", paste(details, collapse = "; "))
+  }
+
+  data.frame(
+    Package = names(versions),
+    Installed = unname(versions),
+    Minimum = unname(required),
+    row.names = NULL,
+    check.names = FALSE
+  )
+}
+
+assert_files_exist <- function(paths, description = "Required input") {
+  missing <- paths[!file.exists(paths)]
+  if (length(missing) > 0) {
+    stop(
+      description, " file(s) not found:\n- ",
+      paste(normalizePath(missing, winslash = "/", mustWork = FALSE),
+            collapse = "\n- ")
+    )
+  }
+  invisible(paths)
+}
+
+normalize_species <- function(x) {
+  x_clean <- tolower(trimws(as.character(x)))
+  dplyr::case_when(
+    x_clean == "human" ~ "Human",
+    x_clean %in% c("nhp", "monkey", "primate", "cynomolgus monkey") ~
+      "Monkey",
+    TRUE ~ stringr::str_to_title(as.character(x))
+  )
+}
+
+time_to_hours <- function(time, unit) {
+  unit_clean <- tolower(trimws(as.character(unit)))
+  dplyr::case_when(
+    unit_clean %in% c("h", "hr", "hrs", "hour", "hours") ~
+      as.numeric(time),
+    unit_clean %in% c("d", "day", "days") ~ as.numeric(time) * 24,
+    unit_clean %in% c("min", "mins", "minute", "minutes") ~
+      as.numeric(time) / 60,
+    TRUE ~ NA_real_
+  )
+}
+
+normalize_micro_unit <- function(x) {
+  micro_symbols <- paste0(intToUtf8(181), intToUtf8(956))
+  x <- as.character(x)
+  Encoding(x) <- "UTF-8"
+  tolower(chartr(micro_symbols, "uu", x))
+}
+
+parse_scenario_name <- function(x) {
+  base <- tools::file_path_sans_ext(basename(x))
+  base <- sub("_mpk$", "", base)
+  parts <- strsplit(base, "_", fixed = TRUE)[[1]]
+  n_parts <- length(parts)
+  if (n_parts < 3L) stop("Could not parse scenario name: ", x)
+
+  molecule <- paste(parts[seq_len(n_parts - 2L)], collapse = "_")
+  species <- normalize_species(parts[n_parts - 1L])
+  dose <- suppressWarnings(as.numeric(parts[n_parts]))
+  if (!is.finite(dose)) stop("Dose is not numeric in scenario name: ", x)
+
+  list(Molecule = molecule, Species = species, Dose = dose)
+}
+
+read_parameter_source <- function(path) {
+  assert_files_exist(path, "Parameter source")
+  x <- openxlsx::read.xlsx(path, sheet = 1, check.names = FALSE)
+  if (ncol(x) < 7L) {
+    stop("Expected at least seven columns in ", path)
+  }
+  names(x)[seq_len(7)] <- c(
+    "Drug.Name", "Target.Name", "Parameter.Name", "Value", "Unit",
+    "Source", "Method"
+  )
+
+  x |>
+    dplyr::transmute(
+      Drug.Name = trimws(as.character(.data$Drug.Name)),
+      Target.Name = trimws(as.character(.data$Target.Name)),
+      Parameter.Name = trimws(as.character(.data$Parameter.Name)),
+      Value = as.numeric(.data$Value),
+      Unit = trimws(as.character(.data$Unit)),
+      Source = as.character(.data$Source),
+      Method = as.character(.data$Method)
+    ) |>
+    dplyr::filter(.data$Drug.Name != "", .data$Parameter.Name != "")
+}
+
+read_target_lookup <- function(parameter_files) {
+  purrr::map_dfr(parameter_files, read_parameter_source) |>
+    dplyr::distinct(.data$Drug.Name, .data$Target.Name) |>
+    dplyr::transmute(
+      Molecule = .data$Drug.Name,
+      Target = .data$Target.Name
+    ) |>
+    dplyr::distinct(.data$Molecule, .keep_all = TRUE)
+}
+
+read_molecular_weight_lookup <- function(data_files) {
+  purrr::map_dfr(data_files, function(path) {
+    assert_files_exist(path, "Observed data")
+    utils::read.csv(
+      path,
+      stringsAsFactors = FALSE,
+      check.names = FALSE,
+      fileEncoding = "UTF-8-BOM"
+    ) |>
+      dplyr::transmute(
+        Molecule = trimws(as.character(.data$Molecule)),
+        MW_g_mol = as.numeric(.data$Molecular.Weight)
+      )
+  }) |>
+    dplyr::filter(is.finite(.data$MW_g_mol)) |>
+    dplyr::distinct(.data$Molecule, .keep_all = TRUE)
+}
+
+resolve_simulation_results <- function(workflow_dir, allow_latest_fallback = TRUE) {
+  results_root <- file.path(workflow_dir, "SimsOutputs", "SimulationResults")
+  manifest <- file.path(workflow_dir, "SimsOutputs", "latest_simulation_run.txt")
+
+  if (file.exists(manifest)) {
+    run_name <- trimws(readLines(manifest, warn = FALSE, n = 1L))
+    selected <- file.path(results_root, run_name)
+    if (nzchar(run_name) && dir.exists(selected)) {
+      return(normalizePath(selected, winslash = "/", mustWork = TRUE))
+    }
+    warning("The simulation manifest points to a missing folder: ", selected)
+  }
+
+  if (!allow_latest_fallback) {
+    stop(
+      "No valid simulation manifest was found. Run 02_Run_Sims.qmd before ",
+      "processing results."
+    )
+  }
+
+  folders <- list.dirs(results_root, recursive = FALSE, full.names = TRUE)
+  if (length(folders) == 0L) {
+    stop("No simulation result folders found in ", results_root)
+  }
+  selected <- folders[which.max(file.mtime(folders))]
+  warning(
+    "No valid run manifest was found; using the most recently modified ",
+    "simulation folder: ", basename(selected)
+  )
+  normalizePath(selected, winslash = "/", mustWork = TRUE)
+}
+
+find_mab_concentration_column <- function(column_names) {
+  candidates <- grep(
+    "PeripheralVenousBlood.*Plasma.*\\[",
+    column_names,
+    value = TRUE
+  )
+  candidates <- candidates[grepl("\\|mAb\\|", candidates)]
+  if (length(candidates) != 1L) {
+    stop(
+      "Expected exactly one peripheral venous plasma mAb concentration ",
+      "column; found ", length(candidates), "."
+    )
+  }
+  candidates
+}
+
+read_simulation_profile <- function(path, mw_lookup) {
+  meta <- parse_scenario_name(path)
+  raw <- data.table::fread(path, data.table = FALSE, check.names = FALSE)
+  concentration_column <- find_mab_concentration_column(names(raw))
+  concentration_unit <- sub(
+    ".*\\[([^]]+)\\]$",
+    "\\1",
+    concentration_column
+  )
+  concentration_unit_normalized <- normalize_micro_unit(concentration_unit)
+  if (!identical(concentration_unit_normalized, "umol/l")) {
+    stop(
+      "Expected simulated plasma concentration in micromol/L; found ",
+      concentration_unit, " in ", basename(path), "."
+    )
+  }
+  mw <- mw_lookup$MW_g_mol[mw_lookup$Molecule == meta$Molecule]
+  if (length(mw) != 1L || !is.finite(mw)) {
+    stop("No unique molecular weight found for ", meta$Molecule)
+  }
+
+  tibble::tibble(
+    Molecule = meta$Molecule,
+    Species = meta$Species,
+    Dose = meta$Dose,
+    IndividualId = as.character(raw[["IndividualId"]]),
+    Time_h = as.numeric(raw[["Time [min]"]]) / 60,
+    # micromol/L * g/mol / 1000 = microgram/mL.
+    Conc_ug_mL = as.numeric(raw[[concentration_column]]) * mw / 1000
+  )
+}
+
+mean_or_na <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0L) NA_real_ else mean(x)
+}
+
+prepare_profile <- function(time_h, conc, t_end_h = Inf) {
+  profile <- tibble::tibble(
+    Time_h = as.numeric(time_h),
+    Conc = as.numeric(conc)
+  ) |>
+    dplyr::filter(
+      is.finite(.data$Time_h), is.finite(.data$Conc),
+      .data$Time_h >= 0, .data$Conc >= 0
+    ) |>
+    dplyr::group_by(.data$Time_h) |>
+    dplyr::summarise(Conc = mean(.data$Conc), .groups = "drop") |>
+    dplyr::arrange(.data$Time_h)
+
+  if (nrow(profile) == 0L) return(profile)
+
+  # If the requested boundary lies between observations, add a boundary value.
+  if (is.finite(t_end_h) && min(profile$Time_h) < t_end_h &&
+      max(profile$Time_h) > t_end_h && !any(profile$Time_h == t_end_h)) {
+    lower <- max(which(profile$Time_h < t_end_h))
+    upper <- min(which(profile$Time_h > t_end_h))
+    fraction <- (t_end_h - profile$Time_h[lower]) /
+      (profile$Time_h[upper] - profile$Time_h[lower])
+    c1 <- profile$Conc[lower]
+    c2 <- profile$Conc[upper]
+    boundary_conc <- if (c1 > 0 && c2 > 0) {
+      exp(log(c1) + fraction * (log(c2) - log(c1)))
+    } else {
+      c1 + fraction * (c2 - c1)
+    }
+    profile <- dplyr::bind_rows(
+      profile,
+      tibble::tibble(Time_h = t_end_h, Conc = boundary_conc)
+    ) |>
+      dplyr::arrange(.data$Time_h)
+  }
+
+  profile <- dplyr::filter(profile, .data$Time_h <= t_end_h)
+  if (nrow(profile) > 0L && !any(profile$Time_h == 0)) {
+    profile <- dplyr::bind_rows(
+      tibble::tibble(Time_h = 0, Conc = 0),
+      profile
+    )
+  }
+  profile
+}
+
+linear_up_log_down_auc <- function(profile) {
+  if (nrow(profile) < 2L) return(NA_real_)
+  dt <- diff(profile$Time_h)
+  c1 <- profile$Conc[-nrow(profile)]
+  c2 <- profile$Conc[-1L]
+  log_down <- c2 < c1 & c1 > 0 & c2 > 0
+  intervals <- ifelse(
+    log_down,
+    dt * (c1 - c2) / log(c1 / c2),
+    dt * (c1 + c2) / 2
+  )
+  sum(intervals)
+}
+
+best_terminal_fit <- function(profile, min_points = 3L) {
+  positive <- profile |>
+    dplyr::filter(.data$Conc > 0) |>
+    dplyr::arrange(.data$Time_h)
+  if (nrow(positive) < min_points) {
+    return(tibble::tibble(
+      Lambda_z_1_h = NA_real_,
+      Terminal_points_n = NA_integer_,
+      Adjusted_R_squared = NA_real_
+    ))
+  }
+
+  cmax_index <- which.max(positive$Conc)[1]
+  post_cmax <- if (cmax_index < nrow(positive)) {
+    positive[(cmax_index + 1L):nrow(positive), , drop = FALSE]
+  } else {
+    positive[0, , drop = FALSE]
+  }
+  if (nrow(post_cmax) < min_points) {
+    post_cmax <- positive[cmax_index:nrow(positive), , drop = FALSE]
+  }
+  if (nrow(post_cmax) < min_points) {
+    return(tibble::tibble(
+      Lambda_z_1_h = NA_real_,
+      Terminal_points_n = NA_integer_,
+      Adjusted_R_squared = NA_real_
+    ))
+  }
+
+  x <- post_cmax$Time_h
+  y <- log(post_cmax$Conc)
+  total_n <- length(x)
+  suffix_sum <- function(z) rev(cumsum(rev(z)))
+  sx <- suffix_sum(x)
+  sy <- suffix_sum(y)
+  sxx <- suffix_sum(x * x)
+  syy <- suffix_sum(y * y)
+  sxy <- suffix_sum(x * y)
+
+  terminal_n <- seq.int(min_points, total_n)
+  start <- total_n - terminal_n + 1L
+  centered_xx <- sxx[start] - sx[start]^2 / terminal_n
+  centered_yy <- syy[start] - sy[start]^2 / terminal_n
+  centered_xy <- sxy[start] - sx[start] * sy[start] / terminal_n
+  slope <- centered_xy / centered_xx
+  r_squared <- (centered_xy^2) / (centered_xx * centered_yy)
+  r_squared <- pmin(pmax(r_squared, 0), 1)
+  adjusted_r_squared <-
+    1 - (1 - r_squared) * (terminal_n - 1) / (terminal_n - 2)
+
+  candidates <- tibble::tibble(
+    Lambda_z_1_h = -slope,
+    Terminal_points_n = terminal_n,
+    Adjusted_R_squared = adjusted_r_squared
+  ) |>
+    dplyr::filter(
+      is.finite(.data$Lambda_z_1_h), .data$Lambda_z_1_h > 0,
+      is.finite(.data$Adjusted_R_squared)
+    ) |>
+    dplyr::arrange(
+      dplyr::desc(.data$Adjusted_R_squared),
+      dplyr::desc(.data$Terminal_points_n)
+    )
+
+  if (nrow(candidates) == 0L) {
+    tibble::tibble(
+      Lambda_z_1_h = NA_real_,
+      Terminal_points_n = NA_integer_,
+      Adjusted_R_squared = NA_real_
+    )
+  } else {
+    candidates[1, , drop = FALSE]
+  }
+}
+
+profile_pk_metrics <- function(time_h, conc, dose_mg_kg, t_end_h = 28 * 24) {
+  profile <- prepare_profile(time_h, conc, t_end_h = t_end_h)
+  if (nrow(profile) < 2L || !any(profile$Conc > 0)) {
+    return(tibble::tibble(
+      Cmax_ug_mL = NA_real_, AUC0_28d_ug_h_mL = NA_real_,
+      AUClast_ug_h_mL = NA_real_, AUCinf_ug_h_mL = NA_real_,
+      AUC_extrapolated_pct = NA_real_, Lambda_z_1_h = NA_real_,
+      Terminal_half_life_day = NA_real_, Terminal_points_n = NA_integer_,
+      Last_time_h = NA_real_, CL_L_day_kg = NA_real_
+    ))
+  }
+
+  terminal <- best_terminal_fit(profile)
+  auc_last <- linear_up_log_down_auc(profile)
+  positive <- dplyr::filter(profile, .data$Conc > 0)
+  last <- positive[nrow(positive), , drop = FALSE]
+  lambda_z <- terminal$Lambda_z_1_h[[1]]
+  extrapolated_auc <- if (is.finite(lambda_z)) last$Conc[[1]] / lambda_z else NA_real_
+  auc_inf <- if (is.finite(extrapolated_auc)) auc_last + extrapolated_auc else NA_real_
+
+  tibble::tibble(
+    Cmax_ug_mL = max(profile$Conc, na.rm = TRUE),
+    # When observations end before day 28, this is the available partial AUC.
+    AUC0_28d_ug_h_mL = auc_last,
+    AUClast_ug_h_mL = auc_last,
+    AUCinf_ug_h_mL = auc_inf,
+    AUC_extrapolated_pct = if (is.finite(auc_inf) && auc_inf > 0) {
+      100 * extrapolated_auc / auc_inf
+    } else {
+      NA_real_
+    },
+    Lambda_z_1_h = lambda_z,
+    Terminal_half_life_day = if (is.finite(lambda_z)) {
+      log(2) / lambda_z / 24
+    } else {
+      NA_real_
+    },
+    Terminal_points_n = terminal$Terminal_points_n[[1]],
+    Last_time_h = last$Time_h[[1]],
+    # Dose is mg/kg and AUC is mg*h/L, so dose/AUC is L/h/kg.
+    CL_L_day_kg = if (is.finite(auc_inf) && auc_inf > 0) {
+      24 * as.numeric(dose_mg_kg) / auc_inf
+    } else {
+      NA_real_
+    }
+  )
+}
+
+within_two_fold <- function(fold_error) {
+  is.finite(fold_error) & fold_error >= 0.5 & fold_error <= 2
+}
+
+required_versions <- c(
+  esqlabsR = "5.6.0", ospsuite = "12.4.2", dplyr = "1.1.0",
+  tidyr = "1.3.0", purrr = "1.0.0", tibble = "3.2.0",
+  ggplot2 = "3.4.0", scales = "1.2.0", data.table = "1.14.0",
+  openxlsx = "4.2.5", knitr = "1.40"
+)
+package_versions <- check_package_versions(required_versions)
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(scales)
+library(data.table)
+library(openxlsx)
+library(knitr)
+
+AUC_END_H <- 28 * 24
+SA_FACTORS <- c(0.1, 10)
+SA_PARAMETER_PATHS <- c(
+  "Target reference concentration" = "Target|Reference concentration",
+  "kint" = "Complex Internalization|kint",
+  "kdeg" = "Target degradation|kdeg"
+)
+MAB_PLASMA_OUTPUT_PATH <-
+  "Organism|PeripheralVenousBlood|mAb|Plasma (Peripheral Venous Blood)"
+
+package_versions |>
+  knitr::kable(caption = "R packages used for the sensitivity analysis")
+```
+
+The model path strings above must match the quantities in the exported MoBi
+models. The script stops if a path is missing or matches more than one
+parameter; it does not guess a replacement.
+
+# 2. Read scenario metadata and supporting lookups
+
+```{r}
+#| label: scenario-metadata
+
+scenario_file <- file.path(CONFIG_DIR, "Scenarios.xlsx")
+project_configuration_file <-
+  file.path(WORKFLOW_DIR, "ProjectConfiguration.xlsx")
+monkey_data_file <- file.path(DATA_DIR, "Monkey", "mAb_data_clean.csv")
+human_data_file <- file.path(DATA_DIR, "Human", "mAb_data_human.csv")
+parameter_files <- c(
+  file.path(DATA_DIR, "Monkey", "Parameters.xlsx"),
+  file.path(DATA_DIR, "Human", "Parameters_human.xlsx")
+)
+
+assert_files_exist(c(
+  scenario_file, project_configuration_file, monkey_data_file,
+  human_data_file, parameter_files
+))
+
+scenario_table <- openxlsx::read.xlsx(
+  scenario_file,
+  sheet = "Scenarios",
+  check.names = FALSE
+)
+
+sa_scenarios <- scenario_table |>
+  transmute(
+    Scenario = as.character(.data$Scenario_name),
+    Meta = map(.data$Scenario, parse_scenario_name),
+    Molecule = map_chr(.data$Meta, "Molecule"),
+    Species = map_chr(.data$Meta, "Species"),
+    Dose_mg_kg = map_dbl(.data$Meta, "Dose")
+  ) |>
+  select(-.data$Meta) |>
+  filter(.data$Species %in% c("Monkey", "Human"))
+
+target_lookup <- read_target_lookup(parameter_files)
+mw_lookup <- read_molecular_weight_lookup(
+  c(monkey_data_file, human_data_file)
+)
+
+sa_scenarios <- sa_scenarios |>
+  left_join(target_lookup, by = "Molecule") |>
+  arrange(.data$Species, .data$Target, .data$Molecule, .data$Dose_mg_kg)
+
+if (anyNA(sa_scenarios$Target)) {
+  stop(
+    "A target name is missing for: ",
+    paste(sa_scenarios$Molecule[is.na(sa_scenarios$Target)], collapse = ", ")
+  )
+}
+
+sa_scenarios |>
+  count(.data$Species, name = "Scenarios") |>
+  knitr::kable(caption = "Scenarios included in the sensitivity analysis")
+```
+
+# 3. Calculate the unvaried 1-fold clearance reference
+
+The reference is obtained from the exact simulation folder selected by
+Tutorial 2. For each scenario, clearance is calculated from dose/AUCinf using
+the same linear-up/log-down and terminal-phase functions used in Tutorial 3.
+Because dose is expressed in mg/kg, clearance is reported in L/day/kg.
+
+```{r}
+#| label: reference-clearance
+
+results_folder <- resolve_simulation_results(
+  WORKFLOW_DIR,
+  allow_latest_fallback = TRUE
+)
+reference_files <- file.path(
+  results_folder,
+  paste0(sa_scenarios$Scenario, ".csv")
+)
+assert_files_exist(reference_files, "Unvaried scenario result")
+
+read_reference_clearance <- function(path) {
+  scenario_name <- tools::file_path_sans_ext(basename(path))
+  scenario_meta <- sa_scenarios |>
+    filter(.data$Scenario == scenario_name)
+  if (nrow(scenario_meta) != 1L) {
+    stop("No unique scenario metadata found for ", scenario_name)
+  }
+
+  profile <- read_simulation_profile(path, mw_lookup = mw_lookup)
+  individual_metrics <- profile |>
+    group_by(.data$IndividualId) |>
+    group_modify(function(.x, .y) {
+      profile_pk_metrics(
+        .x$Time_h,
+        .x$Conc_ug_mL,
+        dose_mg_kg = scenario_meta$Dose_mg_kg[[1]],
+        t_end_h = AUC_END_H
+      )
+    }) |>
+    ungroup()
+
+  tibble(
+    Scenario = scenario_name,
+    Molecule = scenario_meta$Molecule[[1]],
+    Species = scenario_meta$Species[[1]],
+    Dose_mg_kg = scenario_meta$Dose_mg_kg[[1]],
+    Reference_CL_L_day_kg = mean_or_na(individual_metrics$CL_L_day_kg),
+    Reference_individuals_n = nrow(individual_metrics)
+  )
+}
+
+reference_clearance <- map_dfr(reference_files, read_reference_clearance)
+
+if (any(!is.finite(reference_clearance$Reference_CL_L_day_kg))) {
+  stop(
+    "Reference clearance could not be calculated for: ",
+    paste(
+      reference_clearance$Scenario[
+        !is.finite(reference_clearance$Reference_CL_L_day_kg)
+      ],
+      collapse = ", "
+    )
+  )
+}
+
+reference_clearance |>
+  select(
+    .data$Species, .data$Molecule, .data$Dose_mg_kg,
+    .data$Reference_CL_L_day_kg, .data$Reference_individuals_n
+  ) |>
+  knitr::kable(
+    digits = 4,
+    caption = paste(
+      "Unvaried clearance references from simulation run",
+      basename(results_folder)
+    )
+  )
+```
+
+# 4. Run the 0.1-fold and 10-fold simulations
+
+The function below creates six runs for each scenario: three parameters times
+two variation factors. Results remain in memory and are embedded in this HTML;
+they are not written to cache or companion table files.
+
+```{r}
+#| label: run-sensitivity
+
+project_configuration <- esqlabsR::createProjectConfiguration(
+  path = project_configuration_file,
+  ignoreVersionCheck = TRUE
+)
+
+sa_run_options <- ospsuite::SimulationRunOptions$new()
+sa_run_options$checkForNegativeValues <- FALSE
+detected_cores <- parallel::detectCores(logical = FALSE)
+if (!is.finite(detected_cores)) detected_cores <- 2L
+sa_run_options$numberOfCores <- min(8L, max(1L, detected_cores - 1L))
+
+run_sa_scenario <- function(
+  scenario_name,
+  molecule,
+  species,
+  dose_mg_kg
+) {
+  mw <- mw_lookup$MW_g_mol[mw_lookup$Molecule == molecule]
+  if (length(mw) != 1L || !is.finite(mw)) {
+    stop("No unique molecular weight found for ", molecule)
+  }
+
+  scenario_configuration <- esqlabsR::readScenarioConfigurationFromExcel(
+    scenarioNames = scenario_name,
+    projectConfiguration = project_configuration
+  )
+  scenario <- esqlabsR::createScenarios(
+    scenarioConfigurations = scenario_configuration
+  )[[scenario_name]]
+  simulation <- scenario$simulation
+
+  old_output_paths <- purrr::map_chr(
+    simulation$outputSelections$allOutputs,
+    "path"
+  )
+  ospsuite::clearOutputs(simulation = simulation)
+  ospsuite::addOutputs(
+    quantitiesOrPaths = MAB_PLASMA_OUTPUT_PATH,
+    simulation = simulation
+  )
+  on.exit({
+    ospsuite::clearOutputs(simulation = simulation)
+    purrr::walk(
+      old_output_paths,
+      ~ ospsuite::addOutputs(
+        quantitiesOrPaths = .x,
+        simulation = simulation
+      )
+    )
+    ospsuite::clearMemory()
+  }, add = TRUE)
+
+  parameter_paths <- unname(SA_PARAMETER_PATHS)
+  initial_values <- setNames(
+    map_dbl(parameter_paths, function(parameter_path) {
+      values <- ospsuite::getQuantityValuesByPath(
+        quantityPaths = parameter_path,
+        simulation = simulation
+      )
+      if (length(values) != 1L || !is.finite(values)) {
+        stop(
+          "Expected one finite value for ", parameter_path,
+          " in ", scenario_name
+        )
+      }
+      as.numeric(values)
+    }),
+    parameter_paths
+  )
+
+  parameter_units <- setNames(
+    map_chr(parameter_paths, function(parameter_path) {
+      matched <- ospsuite::getAllParametersMatching(
+        paths = parameter_path,
+        container = simulation
+      )
+      if (length(matched) != 1L) {
+        stop(
+          "Expected one parameter match for ", parameter_path,
+          " in ", scenario_name, "; found ", length(matched)
+        )
+      }
+      as.character(matched[[1]]$unit)
+    }),
+    parameter_paths
+  )
+
+  is_formula <- map_lgl(
+    parameter_paths,
+    ~ ospsuite::isExplicitFormulaByPath(
+      path = .x,
+      simulation = simulation
+    )
+  )
+  constant_paths <- parameter_paths[!is_formula]
+  formula_paths <- parameter_paths[is_formula]
+
+  result_ids <- setNames(
+    map(
+      parameter_paths,
+      ~ setNames(vector("list", length(SA_FACTORS)), SA_FACTORS)
+    ),
+    parameter_paths
+  )
+  simulation_batches <- list()
+
+  # Constant parameters can share one batch as long as every run supplies all
+  # constant values and changes only the parameter under investigation.
+  if (length(constant_paths) > 0L) {
+    constant_batch <- ospsuite::createSimulationBatch(
+      simulation = simulation,
+      parametersOrPaths = constant_paths
+    )
+    for (parameter_path in constant_paths) {
+      for (variation_factor in SA_FACTORS) {
+        run_values <- initial_values[constant_paths]
+        run_values[[parameter_path]] <-
+          initial_values[[parameter_path]] * variation_factor
+        result_ids[[parameter_path]][[as.character(variation_factor)]] <-
+          constant_batch$addRunValues(parameterValues = run_values)
+      }
+    }
+    simulation_batches <- c(simulation_batches, constant_batch)
+  }
+
+  # Formula parameters require separate batches so their expression can be
+  # replaced by the requested scalar for that run.
+  for (parameter_path in formula_paths) {
+    formula_batch <- ospsuite::createSimulationBatch(
+      simulation = simulation,
+      parametersOrPaths = parameter_path
+    )
+    for (variation_factor in SA_FACTORS) {
+      result_ids[[parameter_path]][[as.character(variation_factor)]] <-
+        formula_batch$addRunValues(
+          parameterValues =
+            initial_values[[parameter_path]] * variation_factor
+        )
+    }
+    simulation_batches <- c(simulation_batches, formula_batch)
+  }
+
+  batch_results <- ospsuite::runSimulationBatches(
+    simulationBatches = simulation_batches,
+    simulationRunOptions = sa_run_options,
+    stopIfFails = FALSE
+  )
+  names(batch_results) <- NULL
+  batch_results <- unlist(
+    batch_results,
+    recursive = FALSE,
+    use.names = TRUE
+  )
+
+  result <- map_dfr(parameter_paths, function(parameter_path) {
+    parameter_label <- names(SA_PARAMETER_PATHS)[
+      match(parameter_path, SA_PARAMETER_PATHS)
+    ]
+
+    map_dfr(SA_FACTORS, function(variation_factor) {
+      result_id <- result_ids[[parameter_path]][[
+        as.character(variation_factor)
+      ]]
+      simulation_result <- purrr::pluck(batch_results, result_id)
+      if (is.null(simulation_result)) {
+        stop(
+          "Sensitivity simulation failed for ", scenario_name, ": ",
+          parameter_label, " at ", variation_factor, "-fold"
+        )
+      }
+
+      output <- ospsuite::simulationResultsToDataFrame(
+        simulation_result,
+        quantitiesOrPaths = MAB_PLASMA_OUTPUT_PATH
+      ) |>
+        filter(.data$paths == MAB_PLASMA_OUTPUT_PATH)
+      if (nrow(output) == 0L) {
+        stop(
+          "The requested plasma mAb output is missing for ", scenario_name,
+          ": ", parameter_label, " at ", variation_factor, "-fold"
+        )
+      }
+
+      concentration_units <- unique(
+        normalize_micro_unit(output$unit)
+      )
+      if (!identical(concentration_units, "umol/l")) {
+        stop(
+          "Expected sensitivity output in micromol/L for ", scenario_name,
+          "; found ", paste(unique(output$unit), collapse = ", "), "."
+        )
+      }
+
+      metrics <- profile_pk_metrics(
+        time_h = as.numeric(output$Time) / 60,
+        conc = as.numeric(output$simulationValues) * mw / 1000,
+        dose_mg_kg = dose_mg_kg,
+        t_end_h = AUC_END_H
+      )
+
+      tibble(
+        Scenario = scenario_name,
+        Molecule = molecule,
+        Species = species,
+        Dose_mg_kg = dose_mg_kg,
+        Parameter = parameter_label,
+        Variation_factor = variation_factor,
+        Parameter_value =
+          initial_values[[parameter_path]] * variation_factor,
+        Parameter_unit = parameter_units[[parameter_path]],
+        Varied_CL_L_day_kg = metrics$CL_L_day_kg[[1]]
+      )
+    })
+  }) |>
+    arrange(.data$Parameter, .data$Variation_factor)
+
+  expected_runs <- tidyr::crossing(
+    Parameter = names(SA_PARAMETER_PATHS),
+    Variation_factor = SA_FACTORS
+  )
+  missing_runs <- anti_join(
+    expected_runs,
+    result,
+    by = c("Parameter", "Variation_factor")
+  )
+  if (nrow(missing_runs) > 0L ||
+      any(!is.finite(result$Varied_CL_L_day_kg))) {
+    stop(
+      "Incomplete sensitivity results for ", scenario_name,
+      ". Expected six finite runs."
+    )
+  }
+
+  result
+}
+
+sa_results <- purrr::pmap_dfr(
+  sa_scenarios |>
+    select(
+      scenario_name = .data$Scenario,
+      molecule = .data$Molecule,
+      species = .data$Species,
+      dose_mg_kg = .data$Dose_mg_kg
+    ),
+  function(scenario_name, molecule, species, dose_mg_kg) {
+    message("One-way sensitivity analysis: ", scenario_name)
+    run_sa_scenario(scenario_name, molecule, species, dose_mg_kg)
+  }
+)
+```
+
+# 5. Express clearance changes relative to the reference
+
+For parameter factor \(f\), varied clearance \(CL_f\), and reference clearance
+\(CL_1\), the reported quantities are:
+
+\[
+\%\Delta CL = 100\left(\frac{CL_f}{CL_1}-1\right)
+\]
+
+\[
+S = \frac{\log(CL_f/CL_1)}{\log(f)}, \qquad
+\text{normalized sensitivity index} = 1 + S.
+\]
+
+An index of 1 means that the parameter change produced no clearance change.
+The sign of \(S\) indicates the direction of the relationship.
+
+```{r}
+#| label: sensitivity-summary
+
+sa_change_table <- sa_results |>
+  left_join(
+    reference_clearance,
+    by = c("Scenario", "Molecule", "Species", "Dose_mg_kg")
+  ) |>
+  left_join(target_lookup, by = "Molecule") |>
+  mutate(
+    CL_percent_delta =
+      100 * (.data$Varied_CL_L_day_kg /
+               .data$Reference_CL_L_day_kg - 1),
+    Normalized_sensitivity_coefficient =
+      log(.data$Varied_CL_L_day_kg /
+            .data$Reference_CL_L_day_kg) /
+      log(.data$Variation_factor),
+    Normalized_sensitivity_index =
+      1 + .data$Normalized_sensitivity_coefficient
+  ) |>
+  arrange(
+    .data$Species, .data$Target, .data$Molecule, .data$Dose_mg_kg,
+    .data$Parameter, .data$Variation_factor
+  )
+
+sa_mean_table <- sa_change_table |>
+  group_by(
+    .data$Species, .data$Target, .data$Molecule,
+    .data$Parameter, .data$Variation_factor
+  ) |>
+  summarise(
+    Mean_CL_percent_delta = mean_or_na(.data$CL_percent_delta),
+    Mean_normalized_sensitivity_coefficient =
+      mean_or_na(.data$Normalized_sensitivity_coefficient),
+    Doses_averaged_n = sum(is.finite(.data$CL_percent_delta)),
+    .groups = "drop"
+  ) |>
+  mutate(
+    Mean_normalized_sensitivity_index =
+      1 + .data$Mean_normalized_sensitivity_coefficient
+  )
+
+sa_change_table |>
+  select(
+    .data$Species, .data$Target, .data$Molecule, .data$Dose_mg_kg,
+    .data$Parameter, .data$Variation_factor,
+    .data$Reference_CL_L_day_kg, .data$Varied_CL_L_day_kg,
+    .data$CL_percent_delta, .data$Normalized_sensitivity_index
+  ) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4))) |>
+  knitr::kable(
+    caption = "Dose-level one-way sensitivity results",
+    row.names = FALSE
+  )
+```
+
+# 6. Create the normalized sensitivity plot
+
+For readability, the plot averages the normalized coefficient across doses for
+each molecule. The horizontal-axis labels add 1 to show the normalized index;
+therefore, the vertical reference line is labelled 1 (no sensitivity).
+
+```{r}
+#| label: sensitivity-plot
+#| fig-width: 14
+#| fig-height: 12
+#| out-width: "100%"
+#| fig-cap: "One-way sensitivity of predicted clearance."
+
+plot_data <- sa_mean_table |>
+  mutate(
+    Parameter = factor(
+      .data$Parameter,
+      levels = rev(names(SA_PARAMETER_PATHS))
+    ),
+    Variation = factor(
+      .data$Variation_factor,
+      levels = SA_FACTORS,
+      labels = paste0(SA_FACTORS, "x")
+    ),
+    Panel = paste(.data$Species, .data$Molecule, sep = " | ")
+  )
+
+maximum_deviation <- max(
+  abs(plot_data$Mean_normalized_sensitivity_coefficient),
+  na.rm = TRUE
+)
+if (!is.finite(maximum_deviation) || maximum_deviation == 0) {
+  maximum_deviation <- 0.1
+}
+
+sensitivity_plot <- ggplot(
+  plot_data,
+  aes(
+    x = .data$Mean_normalized_sensitivity_coefficient,
+    y = .data$Parameter,
+    fill = .data$Variation
+  )
+) +
+  annotate(
+    "rect",
+    xmin = -0.1,
+    xmax = 0.1,
+    ymin = -Inf,
+    ymax = Inf,
+    fill = "grey92",
+    alpha = 0.7
+  ) +
+  geom_vline(xintercept = 0, colour = "grey35", linewidth = 0.55) +
+  geom_col(
+    position = position_dodge2(width = 0.8, preserve = "single"),
+    width = 0.68
+  ) +
+  facet_wrap(~ Panel, ncol = 4) +
+  scale_fill_manual(values = c("0.1x" = "#0072B2", "10x" = "#D55E00")) +
+  scale_x_continuous(
+    limits = c(-1, 1) * maximum_deviation * 1.05,
+    labels = function(x) scales::label_number(accuracy = 0.01)(x + 1)
+  ) +
+  labs(
+    title = "One-way sensitivity of predicted clearance",
+    subtitle =
+      "Mean normalized sensitivity index across doses; 1 = no sensitivity",
+    x = "Mean normalized sensitivity index (1 + S)",
+    y = "Parameter varied",
+    fill = "Variation"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    strip.background = element_rect(fill = "grey93"),
+    strip.text = element_text(face = "bold", size = 8),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+
+sensitivity_plot
+```
+
+# 7. Present the complete sensitivity record in this HTML
+
+The dose-level table preserves every varied run and its comparison with the
+unvaried reference. The mean table is the source for the figure. Settings and
+software versions are included so the calculation can be reconstructed without
+a companion workbook.
+
+## Raw varied-run clearances
+
+```{r}
+#| label: raw-sensitivity-runs
+
+sa_results |>
+  mutate(across(where(is.numeric), ~ round(.x, 5))) |>
+  knitr::kable(
+    caption = "Raw clearance results from all one-way perturbation runs",
+    row.names = FALSE
+  )
+```
+
+## Complete dose-level sensitivity table
+
+```{r}
+#| label: complete-dose-level-sensitivity
+
+sa_change_table |>
+  mutate(across(where(is.numeric), ~ round(.x, 5))) |>
+  knitr::kable(
+    caption = "Dose-level clearance changes and normalized sensitivity",
+    row.names = FALSE
+  )
+```
+
+## Mean sensitivity across doses
+
+```{r}
+#| label: mean-sensitivity-table
+
+sa_mean_table |>
+  mutate(across(where(is.numeric), ~ round(.x, 5))) |>
+  knitr::kable(
+    caption = "Mean one-way sensitivity results across doses",
+    row.names = FALSE
+  )
+```
+
+## Analysis settings and package versions
+
+```{r}
+#| label: sensitivity-analysis-settings
+
+analysis_settings <- bind_rows(
+  tibble(Setting = "Selected baseline run", Value = basename(results_folder)),
+  tibble(Setting = "AUC horizon (hours)", Value = as.character(AUC_END_H)),
+  tibble(
+    Setting = "Variation factors",
+    Value = paste(SA_FACTORS, collapse = ", ")
+  ),
+  tibble(
+    Setting = paste0("Parameter path: ", names(SA_PARAMETER_PATHS)),
+    Value = unname(SA_PARAMETER_PATHS)
+  ),
+  transmute(
+    package_versions,
+    Setting = paste0("R package: ", .data$Package),
+    Value = .data$Installed
+  ) |>
+    select(.data$Setting, .data$Value)
+)
+
+analysis_settings |>
+  knitr::kable(caption = "Sensitivity-analysis settings")
+```
+
+## R session information
+
+```{r}
+#| label: sensitivity-session-info
+
+sessionInfo()
+```
+
+# Interpretation checklist
+
+1. Confirm that each scenario has six varied runs.
+2. Use the dose-level results before relying on the across-dose mean; averaging
+   can conceal dose-dependent target-mediated behavior.
+3. Interpret an index near 1 as weak local sensitivity over the tested change.
+4. Inspect the direction as well as the magnitude. The 0.1-fold and 10-fold
+   perturbations need not be symmetric in a nonlinear PBPK/TMDD model.
+5. Treat this result as a model-behavior diagnostic, not as evidence that the
+   biological parameters truly span 0.1 to 10 times their literature values.

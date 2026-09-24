@@ -1,0 +1,15 @@
+Setting,Value
+Molecules,Golimumab
+Dose grid (mg/kg),"0.1, 1, 3, 10, 30"
+Input variability CV,"30, 50"
+Physiological monkeys,50
+Parameter sets per variability level,100
+Parameter sets per simulation batch,10
+Checkpoint reuse enabled,TRUE
+Crossed profiles per variability/dose,5000
+Successful concentration-time profiles,49998
+Documented skipped profiles,2
+Sampling times (h),"0.25, 1, 2, 4, 8, 24, 48, 144, 240, 336, 504, 672"
+Parameter-draw seed,20260919
+Population seed,20260919
+Elapsed minutes in current render,0.05
