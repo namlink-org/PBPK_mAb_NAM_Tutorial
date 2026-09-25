@@ -28,7 +28,7 @@ complete before observed concentrations are loaded.
 The analysis produces:
 
 - observed-versus-predicted concentration-time figures for monkey and human;
-- Cmax, AUC0-28d, AUCinf, and clearance for each molecule-dose scenario;
+- Cmax, AUC0-tlast, AUCinf, and clearance for each molecule-dose scenario;
 - predicted/observed fold errors and within-two-fold accuracy summaries;
 - the percentage of AUCinf that is extrapolated beyond the last concentration;
 - complete scenario- and profile-level tables embedded in this HTML report.
@@ -36,16 +36,19 @@ The analysis produces:
 ## Metric definitions
 
 - **Cmax** is the maximum concentration in the available profile.
-- **AUC0-28d** uses the linear-up/log-down trapezoidal method through 672 hours.
-  If an observed profile ends before 672 hours, its AUC is necessarily truncated
-  at the last observed time and `Last_time_h` shows that limitation.
+- **AUC0-tlast** is calculated from time zero through the last sampling time of
+  each observed profile. The predicted profile is sampled at those same observed
+  times, and the identical linear-up/log-down trapezoidal rule is applied to both
+  profiles.
 - **AUCinf** equals AUClast plus Clast divided by terminal lambda-z.
 - **Clearance** equals dose divided by AUCinf. Because dose is in mg/kg,
-  clearance is reported in L/day/kg.
+  clearance is reported in L/day/kg. Observed clearance is evaluable only when
+  the extrapolated fraction of observed AUCinf is no greater than 20%; otherwise
+  the profile is marked `Not evaluable` and excluded from clearance comparisons.
 - **Fold error** equals predicted divided by observed. Values from 0.5 through
   2.0 meet the prespecified two-fold criterion.
 - **Percent extrapolated** equals 100 times `(AUCinf - AUClast) / AUCinf`.
-  Values greater than 20% are flagged.
+  Values greater than 20% make observed clearance not evaluable.
 
 # 1. Set up portable paths and outputs
 
@@ -396,6 +399,39 @@ linear_up_log_down_auc <- function(profile) {
   sum(intervals)
 }
 
+sample_profile_at_times <- function(time_h, conc, sample_times_h) {
+  source <- prepare_profile(time_h, conc, t_end_h = Inf)
+  requested <- sort(unique(as.numeric(sample_times_h)))
+  requested <- requested[is.finite(requested) & requested >= 0]
+  if (nrow(source) < 2L || length(requested) == 0L) {
+    return(rep(NA_real_, length(requested)))
+  }
+  if (min(requested) < min(source$Time_h) ||
+      max(requested) > max(source$Time_h)) {
+    stop("Observed sampling times fall outside the predicted time range.")
+  }
+
+  vapply(requested, function(time) {
+    exact <- match(time, source$Time_h)
+    if (!is.na(exact)) return(source$Conc[[exact]])
+
+    lower <- max(which(source$Time_h < time))
+    upper <- min(which(source$Time_h > time))
+    fraction <- (time - source$Time_h[[lower]]) /
+      (source$Time_h[[upper]] - source$Time_h[[lower]])
+    c1 <- source$Conc[[lower]]
+    c2 <- source$Conc[[upper]]
+
+    # Match the interpolation to the integration convention: linear while
+    # rising (or when a value is zero), log-linear while declining.
+    if (c2 < c1 && c1 > 0 && c2 > 0) {
+      exp(log(c1) + fraction * (log(c2) - log(c1)))
+    } else {
+      c1 + fraction * (c2 - c1)
+    }
+  }, numeric(1))
+}
+
 best_terminal_fit <- function(profile, min_points = 3L) {
   positive <- profile |>
     dplyr::filter(.data$Conc > 0) |>
@@ -471,11 +507,11 @@ best_terminal_fit <- function(profile, min_points = 3L) {
   }
 }
 
-profile_pk_metrics <- function(time_h, conc, dose_mg_kg, t_end_h = 28 * 24) {
+profile_pk_metrics <- function(time_h, conc, dose_mg_kg, t_end_h = Inf) {
   profile <- prepare_profile(time_h, conc, t_end_h = t_end_h)
   if (nrow(profile) < 2L || !any(profile$Conc > 0)) {
     return(tibble::tibble(
-      Cmax_ug_mL = NA_real_, AUC0_28d_ug_h_mL = NA_real_,
+      Cmax_ug_mL = NA_real_, AUC0_tlast_ug_h_mL = NA_real_,
       AUClast_ug_h_mL = NA_real_, AUCinf_ug_h_mL = NA_real_,
       AUC_extrapolated_pct = NA_real_, Lambda_z_1_h = NA_real_,
       Terminal_half_life_day = NA_real_, Terminal_points_n = NA_integer_,
@@ -493,8 +529,7 @@ profile_pk_metrics <- function(time_h, conc, dose_mg_kg, t_end_h = 28 * 24) {
 
   tibble::tibble(
     Cmax_ug_mL = max(profile$Conc, na.rm = TRUE),
-    # When observations end before day 28, this is the available partial AUC.
-    AUC0_28d_ug_h_mL = auc_last,
+    AUC0_tlast_ug_h_mL = auc_last,
     AUClast_ug_h_mL = auc_last,
     AUCinf_ug_h_mL = auc_inf,
     AUC_extrapolated_pct = if (is.finite(auc_inf) && auc_inf > 0) {
@@ -542,7 +577,7 @@ library(data.table)
 library(openxlsx)
 library(knitr)
 
-AUC_END_H <- 28 * 24
+PLOT_END_H <- 28 * 24
 EXTRAPOLATION_THRESHOLD_PCT <- 20
 
 package_versions |>
@@ -721,7 +756,7 @@ if (all(prediction_individual_counts$Individuals == 1L)) {
   # The supplied a priori scenarios are deterministic individual simulations,
   # so all three summary curves are the same curve.
   prediction_plot_data <- predicted |>
-    filter(.data$Time_h <= AUC_END_H) |>
+    filter(.data$Time_h <= PLOT_END_H) |>
     transmute(
       .data$Molecule, .data$Species, .data$Dose, .data$Time_h,
       Pred_p05 = .data$Conc_ug_mL,
@@ -730,7 +765,7 @@ if (all(prediction_individual_counts$Individuals == 1L)) {
     )
 } else {
   prediction_plot_data <- predicted |>
-    filter(.data$Time_h <= AUC_END_H) |>
+    filter(.data$Time_h <= PLOT_END_H) |>
     group_by(.data$Molecule, .data$Species, .data$Dose, .data$Time_h) |>
     summarise(
       Pred_p05 = quantile(.data$Conc_ug_mL, 0.05, na.rm = TRUE),
@@ -755,7 +790,7 @@ prediction_plot_data <- prediction_plot_data |>
   ungroup()
 
 observed_plot_data <- observed |>
-  filter(.data$Time_h <= AUC_END_H) |>
+  filter(.data$Time_h <= PLOT_END_H) |>
   group_by(.data$Molecule, .data$Species, .data$Dose, .data$Time_h) |>
   summarise(
     Obs_mean = mean(.data$Conc_ug_mL, na.rm = TRUE),
@@ -846,8 +881,8 @@ plot_species_predictions <- function(species_label) {
     ) +
     facet_wrap(~ Facet, scales = "free_y", ncol = 3, drop = TRUE) +
     scale_x_continuous(
-      limits = c(0, AUC_END_H),
-      breaks = seq(0, AUC_END_H, by = 168),
+      limits = c(0, PLOT_END_H),
+      breaks = seq(0, PLOT_END_H, by = 168),
       labels = function(x) x / 24
     ) +
     scale_y_log10(labels = scales::label_scientific(digits = 2)) +
@@ -901,6 +936,11 @@ individual. Scenario-level values are then arithmetic means across profiles.
 This preserves the distinction between within-profile noncompartmental
 calculation and between-profile aggregation.
 
+For AUC0-tlast, every simulated individual is sampled at the exact time points
+of every corresponding observed profile. This produces paired observed and
+predicted AUCs with the same integration interval and sampling grid. Other
+predicted PK metrics continue to use the full simulated profile.
+
 The terminal phase is selected from consecutive post-Cmax suffixes using the
 largest adjusted R-squared, with at least three positive concentrations. The
 selected number of points and terminal-phase diagnostics remain in the embedded
@@ -910,7 +950,7 @@ HTML tables so questionable AUCinf estimates can be identified.
 #| label: calculate-pk-metrics
 
 metric_columns <- c(
-  "Cmax_ug_mL", "AUC0_28d_ug_h_mL", "AUClast_ug_h_mL",
+  "Cmax_ug_mL", "AUC0_tlast_ug_h_mL", "AUClast_ug_h_mL",
   "AUCinf_ug_h_mL", "AUC_extrapolated_pct", "Lambda_z_1_h",
   "Terminal_half_life_day", "Terminal_points_n", "Last_time_h",
   "CL_L_day_kg"
@@ -924,9 +964,22 @@ observed_profile_metrics <- observed |>
     .x$Time_h,
     .x$Conc_ug_mL,
     dose_mg_kg = .y$Dose[[1]],
-    t_end_h = AUC_END_H
+    t_end_h = max(.x$Time_h, na.rm = TRUE)
   )) |>
-  ungroup()
+  ungroup() |>
+  mutate(
+    Clearance_evaluability = case_when(
+      !is.finite(.data$AUC_extrapolated_pct) ~ "Not evaluable",
+      .data$AUC_extrapolated_pct > EXTRAPOLATION_THRESHOLD_PCT ~
+        "Not evaluable",
+      TRUE ~ "Evaluable"
+    ),
+    CL_L_day_kg = if_else(
+      .data$Clearance_evaluability == "Evaluable",
+      .data$CL_L_day_kg,
+      NA_real_
+    )
+  )
 
 predicted_profile_metrics <- predicted |>
   group_by(
@@ -936,9 +989,56 @@ predicted_profile_metrics <- predicted |>
     .x$Time_h,
     .x$Conc_ug_mL,
     dose_mg_kg = .y$Dose[[1]],
-    t_end_h = AUC_END_H
+    t_end_h = Inf
   )) |>
   ungroup()
+
+observed_sampling_schedules <- observed |>
+  group_by(
+    .data$Molecule, .data$Species, .data$Dose, .data$Profile_ID
+  ) |>
+  summarise(
+    Sampling_times_h = list(sort(unique(.data$Time_h))),
+    Observed_tlast_h = max(.data$Time_h),
+    .groups = "drop"
+  )
+
+predicted_profiles <- predicted |>
+  group_by(
+    .data$Molecule, .data$Species, .data$Dose, .data$IndividualId
+  ) |>
+  summarise(
+    Predicted_time_h = list(.data$Time_h),
+    Predicted_conc_ug_mL = list(.data$Conc_ug_mL),
+    .groups = "drop"
+  )
+
+predicted_auc0_tlast_profile_metrics <- observed_sampling_schedules |>
+  inner_join(
+    predicted_profiles,
+    by = c("Molecule", "Species", "Dose"),
+    relationship = "many-to-many"
+  ) |>
+  mutate(
+    Sampled_predicted_conc = pmap(
+      list(
+        .data$Predicted_time_h,
+        .data$Predicted_conc_ug_mL,
+        .data$Sampling_times_h
+      ),
+      sample_profile_at_times
+    ),
+    Predicted_AUC0_tlast_ug_h_mL = map2_dbl(
+      .data$Sampling_times_h,
+      .data$Sampled_predicted_conc,
+      ~ linear_up_log_down_auc(prepare_profile(.x, .y, t_end_h = max(.x)))
+    )
+  ) |>
+  select(
+    .data$Molecule, .data$Species, .data$Dose, .data$Profile_ID,
+    .data$IndividualId, .data$Observed_tlast_h,
+    .data$Predicted_AUC0_tlast_ug_h_mL
+  )
 
 summarize_metrics <- function(data, prefix) {
   data |>
@@ -955,19 +1055,58 @@ summarize_metrics <- function(data, prefix) {
 }
 
 observed_metrics <- summarize_metrics(observed_profile_metrics, "Observed")
-predicted_metrics <- summarize_metrics(predicted_profile_metrics, "Predicted")
+predicted_metrics <- summarize_metrics(predicted_profile_metrics, "Predicted") |>
+  select(-.data$Predicted_AUC0_tlast_ug_h_mL) |>
+  left_join(
+    predicted_auc0_tlast_profile_metrics |>
+      group_by(.data$Molecule, .data$Species, .data$Dose) |>
+      summarise(
+        Predicted_AUC0_tlast_ug_h_mL =
+          mean_or_na(.data$Predicted_AUC0_tlast_ug_h_mL),
+        .groups = "drop"
+      ),
+    by = c("Molecule", "Species", "Dose")
+  )
+
+observed_clearance_evaluability <- observed_profile_metrics |>
+  group_by(.data$Molecule, .data$Species, .data$Dose) |>
+  summarise(
+    Observed_clearance_evaluable_profiles_n =
+      sum(.data$Clearance_evaluability == "Evaluable"),
+    Observed_clearance_profiles_n = n(),
+    Observed_Clearance_evaluability = case_when(
+      Observed_clearance_evaluable_profiles_n == 0L ~ "Not evaluable",
+      Observed_clearance_evaluable_profiles_n < Observed_clearance_profiles_n ~
+        paste0(
+          "Partially evaluable (",
+          Observed_clearance_evaluable_profiles_n, "/",
+          Observed_clearance_profiles_n, " profiles)"
+        ),
+      TRUE ~ "Evaluable"
+    ),
+    .groups = "drop"
+  )
 
 scenario_metrics <- full_join(
   observed_metrics,
   predicted_metrics,
   by = c("Molecule", "Species", "Dose")
 ) |>
+  left_join(
+    observed_clearance_evaluability,
+    by = c("Molecule", "Species", "Dose")
+  ) |>
   left_join(target_lookup, by = "Molecule") |>
   mutate(
     FE_Cmax = .data$Predicted_Cmax_ug_mL / .data$Observed_Cmax_ug_mL,
-    FE_AUC0_28d =
-      .data$Predicted_AUC0_28d_ug_h_mL / .data$Observed_AUC0_28d_ug_h_mL,
-    FE_Clearance = .data$Predicted_CL_L_day_kg / .data$Observed_CL_L_day_kg,
+    FE_AUC0_tlast =
+      .data$Predicted_AUC0_tlast_ug_h_mL /
+        .data$Observed_AUC0_tlast_ug_h_mL,
+    FE_Clearance = if_else(
+      .data$Observed_Clearance_evaluability == "Not evaluable",
+      NA_real_,
+      .data$Predicted_CL_L_day_kg / .data$Observed_CL_L_day_kg
+    ),
     Observed_AUC_extrapolation_flag = case_when(
       !is.finite(.data$Observed_AUC_extrapolated_pct) ~ "Not estimable",
       .data$Observed_AUC_extrapolated_pct > EXTRAPOLATION_THRESHOLD_PCT ~ ">20%",
@@ -988,8 +1127,10 @@ scenario_metrics <- full_join(
 # 6. Summarize predictive performance
 
 The accuracy denominator includes only scenarios with finite observed and
-predicted values for the relevant metric. This prevents a non-estimable AUCinf
-or clearance from being counted as a failed prediction without being visible.
+predicted values for the relevant metric. Observed profiles with more than 20%
+AUCinf extrapolation are excluded from clearance summaries; a scenario with no
+evaluable observed clearance profiles is reported as `Not evaluable` rather
+than counted as a failed prediction.
 
 ```{r}
 #| label: accuracy-summary
@@ -998,11 +1139,11 @@ accuracy_summary <- scenario_metrics |>
   select(
     .data$Species, .data$Molecule, .data$Dose,
     Cmax = .data$FE_Cmax,
-    `AUC0-28d` = .data$FE_AUC0_28d,
+    `AUC0-tlast` = .data$FE_AUC0_tlast,
     Clearance = .data$FE_Clearance
   ) |>
   pivot_longer(
-    cols = c("Cmax", "AUC0-28d", "Clearance"),
+    cols = c("Cmax", "AUC0-tlast", "Clearance"),
     names_to = "Metric",
     values_to = "Fold_error"
   ) |>
@@ -1016,7 +1157,7 @@ accuracy_summary <- scenario_metrics |>
   mutate(Accuracy = .data$Within_two_fold / .data$Evaluated) |>
   arrange(
     factor(.data$Species, levels = c("Monkey", "Human")),
-    match(.data$Metric, c("AUC0-28d", "Cmax", "Clearance"))
+    match(.data$Metric, c("AUC0-tlast", "Cmax", "Clearance"))
   )
 
 accuracy_summary |>
@@ -1032,10 +1173,10 @@ accuracy_summary |>
 display_columns <- c(
   "Target", "Molecule", "Dose",
   "Observed_Cmax_ug_mL", "Predicted_Cmax_ug_mL", "FE_Cmax",
-  "Observed_AUC0_28d_ug_h_mL", "Predicted_AUC0_28d_ug_h_mL",
-  "FE_AUC0_28d", "Observed_CL_L_day_kg", "Predicted_CL_L_day_kg",
+  "Observed_AUC0_tlast_ug_h_mL", "Predicted_AUC0_tlast_ug_h_mL",
+  "FE_AUC0_tlast", "Observed_CL_L_day_kg", "Predicted_CL_L_day_kg",
   "FE_Clearance", "Observed_AUC_extrapolated_pct",
-  "Observed_AUC_extrapolation_flag"
+  "Observed_AUC_extrapolation_flag", "Observed_Clearance_evaluability"
 )
 
 scenario_metrics |>
@@ -1060,9 +1201,9 @@ scenario_metrics |>
 # 7. Inspect AUCinf extrapolation
 
 A high extrapolated fraction indicates that terminal exposure and clearance are
-sensitive to the selected terminal slope. The flag is a diagnostic; it is not a
-replacement for reviewing the underlying concentration-time profile and the
-selected terminal time points.
+sensitive to the selected terminal slope. An observed profile is marked `Not
+evaluable` for clearance when its extrapolated fraction exceeds 20% or cannot be
+estimated. The terminal diagnostics remain available for review.
 
 ```{r}
 #| label: auc-extrapolation-table
@@ -1079,6 +1220,8 @@ auc_extrapolation <- scenario_metrics |>
     `Observed AUC extrapolated (%)` =
       .data$Observed_AUC_extrapolated_pct,
     `Observed flag` = .data$Observed_AUC_extrapolation_flag,
+    `Observed clearance evaluability` =
+      .data$Observed_Clearance_evaluability,
     `Predicted profiles (n)` = .data$Predicted_Profiles_n,
     `Predicted last time (h)` = .data$Predicted_Last_time_h,
     `Predicted terminal points (mean n)` =
@@ -1107,12 +1250,15 @@ created by Quarto.
 
 analysis_record <- data.frame(
   Field = c(
-    "Simulation result folder", "Analysis date", "AUC end (h)",
+    "Simulation result folder", "Analysis date", "Comparison AUC interval",
+    "Predicted comparison AUC sampling",
     "AUC extrapolation flag threshold (%)",
     "Observed concentration unit", "Predicted concentration conversion"
   ),
   Value = c(
-    basename(results_folder), as.character(Sys.Date()), AUC_END_H,
+    basename(results_folder), as.character(Sys.Date()),
+    "0 to each observed profile's last sampling time",
+    "Predicted profile interpolated at observed sampling times",
     EXTRAPOLATION_THRESHOLD_PCT, "microgram/mL",
     "micromol/L multiplied by molecular weight (g/mol) divided by 1000"
   ),
@@ -1162,6 +1308,19 @@ predicted_profile_metrics |>
   )
 ```
 
+## Predicted AUC0-tlast matched to observed profiles
+
+```{r}
+#| label: complete-matched-predicted-auc
+
+predicted_auc0_tlast_profile_metrics |>
+  mutate(across(where(is.numeric), ~ round(.x, 4))) |>
+  knitr::kable(
+    caption = "Predicted AUC0-tlast on each observed profile's sampling grid",
+    row.names = FALSE
+  )
+```
+
 ## R session information
 
 ```{r}
@@ -1174,10 +1333,10 @@ sessionInfo()
 
 For each molecule and dose, review the concentration-time plot together with
 the metric table. A Cmax fold error can be influenced by infusion duration and
-early sampling. AUC0-28d and clearance are mathematically related because
-clearance is derived from AUCinf. When the AUCinf extrapolated fraction is high,
-interpret clearance cautiously and inspect the terminal sampling window before
-attributing a discrepancy to the PBPK model.
+early sampling. AUC0-tlast compares exposure over an identical observed interval
+and sampling grid. Clearance is derived separately from AUCinf and is not
+evaluated when the observed extrapolated fraction exceeds 20%; inspect the
+terminal sampling window before attributing a discrepancy to the PBPK model.
 
 Tutorial 4 examines whether uncertainty in target reference concentration,
 target degradation, or complex internalization can explain clearance

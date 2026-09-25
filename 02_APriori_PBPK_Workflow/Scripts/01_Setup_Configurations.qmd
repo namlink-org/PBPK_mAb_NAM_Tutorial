@@ -528,7 +528,11 @@ safe_save_workbook(
 )
 
 # Scenarios.xlsx --------------------------------------------------------------
-simulation_time <- "0, 12, 12; 12, 672, 0.1666667"
+# Continue simulations through 120 days so every current observed tlast
+# (maximum 2735.04 h) is covered by the predicted profile. This allows the
+# evaluation script to sample predictions at the observed times without
+# extrapolating the simulated concentration-time curve.
+simulation_time <- "0, 12, 12; 12, 2880, 0.1666667"
 scenario_sheet <- scenarios |>
   transmute(
     Scenario_name = .data$Scenario,

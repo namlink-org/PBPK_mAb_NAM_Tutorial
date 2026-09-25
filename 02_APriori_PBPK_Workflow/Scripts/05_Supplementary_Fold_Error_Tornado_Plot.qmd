@@ -18,10 +18,12 @@ This supplementary script creates one six-panel tornado plot from the complete
 scenario-level results embedded in `03_Process_Sims_Outputs.html`. It does not
 rerun a PBPK simulation or recalculate a PK endpoint.
 
-The rows compare monkey and human predictions. The columns show AUC0-28d,
+The rows compare monkey and human predictions. The columns show AUC0-tlast,
 Cmax, and clearance. Each horizontal bar represents one molecule-dose
 scenario and begins at a fold error of 1. Underprediction extends to the left
 and overprediction extends to the right on a base-2 logarithmic scale.
+Clearance scenarios that fail the observed AUCinf extrapolation criterion are
+shown as `Not evaluable` rather than as fold-error bars.
 
 ```{r}
 #| label: setup
@@ -89,9 +91,9 @@ if (!file.exists(INPUT_HTML)) {
 }
 
 SPECIES_LEVELS <- c("Monkey", "Human")
-METRIC_LEVELS <- c("AUC0-28d", "Cmax", "Clearance")
+METRIC_LEVELS <- c("AUC0-tlast", "Cmax", "Clearance")
 METRIC_COLUMNS <- c(
-  `AUC0-28d` = "FE_AUC0_28d",
+  `AUC0-tlast` = "FE_AUC0_tlast",
   Cmax = "FE_Cmax",
   Clearance = "FE_Clearance"
 )
@@ -151,7 +153,7 @@ scenario_metrics <- scenario_metrics |>
     Molecule = as.character(.data$Molecule),
     Species = as.character(.data$Species),
     Dose_mg_kg = as.numeric(.data$Dose),
-    FE_AUC0_28d = as.numeric(.data$FE_AUC0_28d),
+    FE_AUC0_tlast = as.numeric(.data$FE_AUC0_tlast),
     FE_Cmax = as.numeric(.data$FE_Cmax),
     FE_Clearance = as.numeric(.data$FE_Clearance)
   )
@@ -217,6 +219,11 @@ fold_error_data <- scenario_metrics |>
     ),
     Scenario_key = paste(.data$Species, .data$Scenario_label, sep = "::"),
     Log2_fold_error = log2(.data$Fold_error),
+    Evaluation_status = if_else(
+      is.finite(.data$Fold_error) & .data$Fold_error > 0,
+      "Evaluated",
+      "Not evaluable"
+    ),
     Fold_error_label = number(
       .data$Fold_error,
       accuracy = 0.01,
@@ -225,11 +232,14 @@ fold_error_data <- scenario_metrics |>
   )
 
 invalid_fold_errors <- fold_error_data |>
-  filter(!is.finite(.data$Fold_error) | .data$Fold_error <= 0)
+  filter(
+    .data$Evaluation_status == "Not evaluable",
+    .data$Metric != "Clearance"
+  )
 if (nrow(invalid_fold_errors) > 0L) {
   stop(
-    "All fold errors must be finite and positive; found ",
-    nrow(invalid_fold_errors), " invalid values."
+    "Only clearance may be not evaluable; found ",
+    nrow(invalid_fold_errors), " invalid non-clearance values."
   )
 }
 
@@ -256,6 +266,11 @@ fold_error_data <- fold_error_data |>
     Label_hjust = if_else(.data$Log2_fold_error >= 0, 0, 1)
   )
 
+evaluable_fold_error_data <- fold_error_data |>
+  filter(.data$Evaluation_status == "Evaluated")
+not_evaluable_data <- fold_error_data |>
+  filter(.data$Evaluation_status == "Not evaluable")
+
 write_csv(
   fold_error_data |>
     transmute(
@@ -264,7 +279,8 @@ write_csv(
       .data$Molecule,
       .data$Dose_mg_kg,
       .data$Fold_error,
-      .data$Log2_fold_error
+      .data$Log2_fold_error,
+      .data$Evaluation_status
     ),
   OUTPUT_TABLE
 )
@@ -278,7 +294,7 @@ write_csv(
 #| fig-height: 19
 #| fig-cap: "Fold-errors from PBPK model predictions without calibration with in vivo PK data for monkeys and humans. Fold error equals predicted divided by observed; bars extend from 1 on a base-2 logarithmic scale, and the shaded region and dashed lines indicate the 0.5- to 2-fold interval."
 
-maximum_log2_error <- max(abs(fold_error_data$Log2_fold_error))
+maximum_log2_error <- max(abs(evaluable_fold_error_data$Log2_fold_error))
 log2_limit <- max(1, ceiling(maximum_log2_error))
 log2_breaks <- seq(-log2_limit, log2_limit, by = 1)
 fold_break_labels <- number(
@@ -288,7 +304,7 @@ fold_break_labels <- number(
 )
 
 tornado_plot <- ggplot(
-  fold_error_data,
+  evaluable_fold_error_data,
   aes(
     x = .data$Log2_fold_error,
     y = .data$Scenario_key,
@@ -325,6 +341,14 @@ tornado_plot <- ggplot(
     ),
     size = 3.15,
     color = "#202020"
+  ) +
+  geom_text(
+    data = not_evaluable_data,
+    aes(x = 0, y = .data$Scenario_key, label = "Not evaluable"),
+    inherit.aes = FALSE,
+    size = 3.0,
+    color = "#7A1F1F",
+    fontface = "italic"
   ) +
   facet_grid(
     rows = vars(.data$Species),
