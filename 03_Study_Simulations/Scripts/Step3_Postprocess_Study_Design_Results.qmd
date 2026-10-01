@@ -1,0 +1,1694 @@
+---
+title: "Step 3: Post-process monkey study-design results"
+author: NAMLink
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: true
+prefer-html: true
+---
+
+# Purpose and analysis 
+
+This script calculates dense and sparse individual PK endpoints from the Step 2
+checkpoints, then compares each sparse reduced-study estimate directly with the
+dense population truth from the same parameter-draw replicate, molecule,
+variability level, and dose.
+
+Dense truth is the arithmetic mean of the evaluable individual dense endpoints
+in the matched cell, normally all 50 monkeys. A profile that still has no
+concentration-time output after the Step 2 batch and single-profile retries is
+excluded only from its exact molecule-by-CV-by-replicate-by-dose cell. Its other
+doses remain eligible. Sparse studies select 2, 3, or 6 distinct evaluable
+monkeys without replacement within each dose group. Selection is independent
+between dose groups, so a monkey may be reused at a different dose. The selected
+monkey set is shared by all three endpoints and by candidate designs containing
+the same dose.
+
+The replicate-matched comparison remains the primary study-design metric. A
+separate secondary analysis compares the same sparse-study estimates with the
+fixed nominal typical-subject reference simulated in Step 2. This secondary
+comparison describes total deviation from the prior nominal prediction and is
+reported separately so parameter uncertainty is not mislabeled as design error.
+
+```{r}
+#| label: setup
+
+rm(list = ls())
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(knitr)
+  library(purrr)
+  library(readr)
+  library(scales)
+  library(tibble)
+  library(tidyr)
+})
+
+find_project_root <- function(start = getwd()) {
+  current <- normalizePath(start, winslash = "/", mustWork = TRUE)
+  repeat {
+    required <- c(
+      file.path(current, "00_Data"),
+      file.path(current, "01_Models"),
+      file.path(current, "02_APriori_PBPK_Workflow"),
+      file.path(current, "03_Study_Simulations")
+    )
+    if (all(dir.exists(required))) return(current)
+    parent <- dirname(current)
+    if (identical(parent, current)) {
+      stop("Could not locate the PBPK_mAb_NAM_Tutorial project root.")
+    }
+    current <- parent
+  }
+}
+
+assert_files_exist <- function(paths, description = "Required input") {
+  missing <- paths[!file.exists(paths)]
+  if (length(missing) > 0L) {
+    stop(description, " is missing: ", paste(missing, collapse = "; "))
+  }
+  invisible(paths)
+}
+
+atomic_save_rds <- function(object, path) {
+  temporary_path <- tempfile(
+    pattern = "study_design_endpoint_checkpoint_",
+    tmpdir = dirname(path),
+    fileext = ".rds"
+  )
+  saveRDS(object, temporary_path, compress = "xz")
+  copied <- file.copy(temporary_path, path, overwrite = TRUE)
+  unlink(temporary_path)
+  if (!copied) stop("Could not save endpoint checkpoint: ", path)
+  invisible(path)
+}
+
+PROJECT_ROOT <- find_project_root()
+STUDY_DIR <- file.path(PROJECT_ROOT, "03_Study_Simulations")
+STEP1_RDS <- file.path(
+  STUDY_DIR, "SimsOutputs", "Step1_Inputs", "Objects",
+  "study_design_step1_inputs.rds"
+)
+STEP2_INDEX_RDS <- file.path(
+  STUDY_DIR, "SimsOutputs", "Step2_Simulations", "Objects",
+  "study_design_step2_run_index.rds"
+)
+
+OUTPUT_DIR <- file.path(STUDY_DIR, "SimsOutputs", "Step3_Results")
+CHECKPOINT_DIR <- file.path(OUTPUT_DIR, "EndpointCheckpoints")
+TABLE_DIR <- file.path(OUTPUT_DIR, "Tables")
+FIGURE_DIR <- file.path(OUTPUT_DIR, "Figures")
+OBJECT_DIR <- file.path(OUTPUT_DIR, "Objects")
+walk(
+  c(OUTPUT_DIR, CHECKPOINT_DIR, TABLE_DIR, FIGURE_DIR, OBJECT_DIR),
+  dir.create,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+INDIVIDUAL_ENDPOINT_FILE <- file.path(
+  TABLE_DIR, "study_design_individual_dense_sparse_endpoints.csv"
+)
+POPULATION_TRUTH_FILE <- file.path(
+  TABLE_DIR, "study_design_replicate_matched_dense_truth.csv"
+)
+SAMPLING_ASSIGNMENT_FILE <- file.path(
+  TABLE_DIR, "study_design_sparse_sampling_assignments.csv"
+)
+FOLD_ERROR_REPLICATE_FILE <- file.path(
+  TABLE_DIR, "study_design_replicate_matched_fold_error.csv"
+)
+FOLD_ERROR_SUMMARY_FILE <- file.path(
+  TABLE_DIR, "study_design_fold_error_summary.csv"
+)
+NOMINAL_REFERENCE_ENDPOINT_FILE <- file.path(
+  TABLE_DIR, "study_design_nominal_typical_reference_endpoints.csv"
+)
+NOMINAL_FOLD_ERROR_REPLICATE_FILE <- file.path(
+  TABLE_DIR, "study_design_nominal_typical_fold_error.csv"
+)
+NOMINAL_FOLD_ERROR_SUMMARY_FILE <- file.path(
+  TABLE_DIR, "study_design_nominal_typical_fold_error_summary.csv"
+)
+ENDPOINT_SUCCESS_FILE <- file.path(
+  TABLE_DIR, "study_design_endpoint_success.csv"
+)
+OVERALL_SUCCESS_FILE <- file.path(
+  TABLE_DIR, "study_design_overall_success.csv"
+)
+ANALYSIS_QC_FILE <- file.path(
+  TABLE_DIR, "study_design_analysis_qc.csv"
+)
+FAILED_PROFILE_EXCLUSION_FILE <- file.path(
+  TABLE_DIR, "study_design_excluded_failed_profiles.csv"
+)
+ENDPOINT_CHECKPOINT_INVENTORY_FILE <- file.path(
+  TABLE_DIR, "study_design_endpoint_checkpoint_inventory.csv"
+)
+SETTINGS_FILE <- file.path(
+  TABLE_DIR, "study_design_step3_settings.csv"
+)
+PACKAGE_FILE <- file.path(
+  TABLE_DIR, "study_design_step3_software_versions.csv"
+)
+ARTIFACT_MANIFEST_FILE <- file.path(
+  TABLE_DIR, "study_design_step3_artifact_manifest.csv"
+)
+RESULTS_RDS <- file.path(
+  OBJECT_DIR, "study_design_step3_results.rds"
+)
+FOLD_ERROR_FIGURE <- file.path(
+  FIGURE_DIR, "study_design_replicate_matched_fold_error.png"
+)
+NOMINAL_FOLD_ERROR_FIGURE <- file.path(
+  FIGURE_DIR, "study_design_nominal_typical_fold_error.png"
+)
+
+FORCE_RERUN <- tolower(Sys.getenv(
+  "STUDY_DESIGN_FORCE_POSTPROCESS",
+  unset = "false"
+)) %in% c("true", "1", "yes")
+SAMPLING_SEED_BASE <- 20262919L
+FOLD_LIMITS <- c(0.5, 2)
+ENDPOINT_LEVELS <- c("AUC0-28d", "Cmax", "Terminal clearance")
+
+assert_files_exist(c(STEP1_RDS, STEP2_INDEX_RDS), "Step 3 input")
+step1 <- readRDS(STEP1_RDS)
+step2 <- readRDS(STEP2_INDEX_RDS)
+settings <- step1$settings
+STEP1_INPUT_MD5 <- unname(tools::md5sum(STEP1_RDS))
+
+if (!identical(step2$step1_input_md5, STEP1_INPUT_MD5)) {
+  stop("Step 1 changed after Step 2. Rerender Step 2 before Step 3.")
+}
+if (is.null(step2$nominal_reference_file) ||
+    is.null(step2$nominal_reference_md5)) {
+  stop("Step 2 does not contain the nominal typical-subject reference.")
+}
+assert_files_exist(
+  step2$nominal_reference_file,
+  "Step 2 nominal typical-subject reference"
+)
+if (!identical(
+  unname(tools::md5sum(step2$nominal_reference_file)),
+  step2$nominal_reference_md5
+)) {
+  stop("The Step 2 nominal reference checksum changed.")
+}
+nominal_reference <- readRDS(step2$nominal_reference_file)
+if (!is.list(nominal_reference) ||
+    !identical(nominal_reference$format_version, 1L) ||
+    !identical(nominal_reference$step1_input_md5, STEP1_INPUT_MD5) ||
+    !is.data.frame(nominal_reference$profiles)) {
+  stop("The Step 2 nominal reference is incomplete or incompatible.")
+}
+if (!is.numeric(settings$n_replicates) || settings$n_replicates < 1L ||
+    !is.numeric(settings$n_population_animals) ||
+      settings$n_population_animals < max(settings$animals_per_group)) {
+  stop("The Step 1 record does not contain a valid approved analysis size.")
+}
+
+required_failure_columns <- c(
+  "Timestamp", "Molecule", "Variability_CV", "Dose_mg_kg", "BatchId",
+  "Replicate", "PopulationIndividualId", "TruthProfileId", "Error"
+)
+failed_profiles <- as_tibble(step2$failed_profiles)
+if (!all(required_failure_columns %in% names(failed_profiles))) {
+  stop("The Step 2 failed-profile record does not have the expected schema.")
+}
+recorded_failure_count <- sum(
+  as.integer(step2$checkpoint_inventory$Failed_profiles)
+)
+failure_key_columns <- c(
+  "Molecule", "Variability_CV", "Replicate", "Dose_mg_kg",
+  "TruthProfileId"
+)
+if (nrow(failed_profiles) != recorded_failure_count ||
+    anyDuplicated(failed_profiles[failure_key_columns]) > 0L ||
+    any(!failed_profiles$Dose_mg_kg %in% settings$doses_mg_kg)) {
+  stop("The Step 2 failed-profile record is inconsistent with its inventory.")
+}
+
+profile_index_for_failures <- step1$crossed_profile_index |>
+  select(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$PopulationIndividualId,
+    .data$TruthProfileId,
+    .data$Monkey_index
+  )
+failed_profile_exclusions <- failed_profiles |>
+  left_join(
+    profile_index_for_failures,
+    by = c(
+      "Molecule", "Variability_CV", "Replicate",
+      "PopulationIndividualId", "TruthProfileId"
+    ),
+    relationship = "many-to-one"
+  )
+if (nrow(failed_profile_exclusions) > 0L &&
+    anyNA(failed_profile_exclusions$Monkey_index)) {
+  stop("A Step 2 failed profile does not match the Step 1 profile index.")
+}
+
+failed_profile_cells <- failed_profile_exclusions |>
+  count(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Dose_mg_kg,
+    name = "Excluded_profiles"
+  )
+expected_truth_counts <- expand_grid(
+  Molecule = settings$molecules,
+  Variability_CV = settings$variability_cv,
+  Replicate = seq_len(settings$n_replicates),
+  Dose_mg_kg = settings$doses_mg_kg
+) |>
+  left_join(
+    failed_profile_cells,
+    by = c("Molecule", "Variability_CV", "Replicate", "Dose_mg_kg")
+  ) |>
+  mutate(
+    Excluded_profiles = replace_na(.data$Excluded_profiles, 0L),
+    Expected_monkeys_in_truth =
+      settings$n_population_animals - .data$Excluded_profiles
+  )
+if (any(expected_truth_counts$Expected_monkeys_in_truth <
+        max(settings$animals_per_group))) {
+  stop("A failed-profile exclusion leaves too few monkeys for a sparse group.")
+}
+
+failed_profile_exclusions <- failed_profile_exclusions |>
+  left_join(
+    expected_truth_counts |>
+      select(
+        .data$Molecule,
+        .data$Variability_CV,
+        .data$Replicate,
+        .data$Dose_mg_kg,
+        Dense_truth_monkeys_after_exclusion =
+          .data$Expected_monkeys_in_truth
+      ),
+    by = c("Molecule", "Variability_CV", "Replicate", "Dose_mg_kg"),
+    relationship = "many-to-one"
+  ) |>
+  mutate(
+    Exclusion_rule = paste(
+      "No concentration-time output after Step 2 batch and",
+      "single-profile retries"
+    ),
+    Analysis_action = paste(
+      "Excluded only from matched dense truth and sparse sampling",
+      "at this dose; other doses retained"
+    )
+  )
+write_csv(failed_profile_exclusions, FAILED_PROFILE_EXCLUSION_FILE)
+
+if (nrow(failed_profile_exclusions) > 0L) {
+  message(
+    "Step 3 will exclude ", nrow(failed_profile_exclusions),
+    " failed Step 2 profile(s) from their matched dose cells."
+  )
+  failed_profile_exclusions |>
+    select(
+      .data$Molecule,
+      `Variability CV (%)` = .data$Variability_CV,
+      .data$Replicate,
+      `Dose (mg/kg)` = .data$Dose_mg_kg,
+      .data$Monkey_index,
+      .data$TruthProfileId,
+      .data$Dense_truth_monkeys_after_exclusion,
+      .data$Error,
+      .data$Analysis_action
+    ) |>
+    mutate(`Variability CV (%)` = 100 * `Variability CV (%)`) |>
+    kable(caption = "Explicit Step 2 profile exclusions used in Step 3")
+} else {
+  tibble(Status = "No Step 2 profile exclusions") |>
+    kable(caption = "Step 3 failed-profile exclusion status")
+}
+
+package_record <- tibble(
+  Package = c(
+    "R", "dplyr", "ggplot2", "knitr", "purrr",
+    "readr", "scales", "tibble", "tidyr"
+  ),
+  Version = c(
+    paste(R.version$major, R.version$minor, sep = "."),
+    map_chr(
+      c(
+        "dplyr", "ggplot2", "knitr", "purrr",
+        "readr", "scales", "tibble", "tidyr"
+      ),
+      ~ as.character(packageVersion(.x))
+    )
+  )
+)
+write_csv(package_record, PACKAGE_FILE)
+```
+
+# Step 1 Define the endpoint calculations
+
+The functions reproduce the prior workflow: linear-up/log-down trapezoidal AUC,
+maximum observed concentration, and terminal clearance calculated from
+`AUCinf = AUClast + Clast/lambda_z`. When time zero is absent, the first sampled
+concentration is carried back to time zero, matching the earlier analysis.
+
+```{r}
+#| label: endpoint-functions
+
+linup_logdown_auc <- function(time_h, concentration) {
+  profile <- tibble(
+    time_h = as.numeric(time_h),
+    concentration = as.numeric(concentration)
+  ) |>
+    filter(
+      is.finite(.data$time_h),
+      is.finite(.data$concentration),
+      .data$time_h >= 0,
+      .data$time_h <= settings$auc_end_h,
+      .data$concentration >= 0
+    ) |>
+    group_by(.data$time_h) |>
+    summarise(concentration = mean(.data$concentration), .groups = "drop") |>
+    arrange(.data$time_h)
+
+  if (nrow(profile) < 2L) return(NA_real_)
+  if (!any(profile$time_h == 0)) {
+    profile <- bind_rows(
+      tibble(time_h = 0, concentration = first(profile$concentration)),
+      profile
+    ) |>
+      arrange(.data$time_h)
+  }
+
+  dt <- diff(profile$time_h)
+  c1 <- head(profile$concentration, -1)
+  c2 <- tail(profile$concentration, -1)
+  declining <- c2 < c1 & c1 > 0 & c2 > 0
+  intervals <- dt * (c1 + c2) / 2
+  intervals[declining] <-
+    dt[declining] * (c1[declining] - c2[declining]) /
+    log(c1[declining] / c2[declining])
+  sum(intervals)
+}
+
+best_terminal_lambda_z <- function(time_h, concentration, min_points = 3L) {
+  terminal_data <- tibble(
+    time_h = as.numeric(time_h),
+    concentration = as.numeric(concentration)
+  ) |>
+    filter(
+      is.finite(.data$time_h),
+      is.finite(.data$concentration),
+      .data$concentration > 0
+    ) |>
+    group_by(.data$time_h) |>
+    summarise(concentration = mean(.data$concentration), .groups = "drop") |>
+    arrange(.data$time_h)
+
+  if (nrow(terminal_data) < min_points) return(NA_real_)
+  tmax_index <- which.max(terminal_data$concentration)[1]
+  start_index <- min(tmax_index + 1L, nrow(terminal_data))
+  post_cmax <- terminal_data |> slice(start_index:n())
+  if (nrow(post_cmax) < min_points) {
+    post_cmax <- terminal_data |> slice(tmax_index:n())
+  }
+  if (nrow(post_cmax) < min_points) return(NA_real_)
+
+  x <- post_cmax$time_h
+  y <- log(post_cmax$concentration)
+  total_n <- length(x)
+  suffix_sum <- function(z) rev(cumsum(rev(z)))
+  sx <- suffix_sum(x)
+  sy <- suffix_sum(y)
+  sxx <- suffix_sum(x * x)
+  syy <- suffix_sum(y * y)
+  sxy <- suffix_sum(x * y)
+  terminal_n <- seq.int(min_points, total_n)
+  candidate_start <- total_n - terminal_n + 1L
+  s_xx <- sxx[candidate_start] - sx[candidate_start]^2 / terminal_n
+  s_yy <- syy[candidate_start] - sy[candidate_start]^2 / terminal_n
+  s_xy <- sxy[candidate_start] -
+    sx[candidate_start] * sy[candidate_start] / terminal_n
+  slope <- s_xy / s_xx
+  r2 <- pmin(pmax((s_xy^2) / (s_xx * s_yy), 0), 1)
+  adj_r2 <- 1 - (1 - r2) * (terminal_n - 1) / (terminal_n - 2)
+
+  candidates <- tibble(slope, adj_r2, terminal_n) |>
+    filter(
+      is.finite(.data$slope),
+      .data$slope < 0,
+      is.finite(.data$adj_r2)
+    ) |>
+    arrange(desc(.data$adj_r2), desc(.data$terminal_n))
+
+  if (nrow(candidates) == 0L) NA_real_ else -candidates$slope[1]
+}
+
+auc_inf_ug_h_ml <- function(time_h, concentration, lambda_z) {
+  if (!is.finite(lambda_z) || lambda_z <= 0) return(NA_real_)
+
+  profile <- tibble(
+    time_h = as.numeric(time_h),
+    concentration = as.numeric(concentration)
+  ) |>
+    filter(
+      is.finite(.data$time_h),
+      is.finite(.data$concentration),
+      .data$time_h >= 0,
+      .data$time_h <= settings$auc_end_h,
+      .data$concentration >= 0
+    ) |>
+    group_by(.data$time_h) |>
+    summarise(concentration = mean(.data$concentration), .groups = "drop") |>
+    arrange(.data$time_h)
+
+  if (nrow(profile) < 2L || !any(profile$concentration > 0)) {
+    return(NA_real_)
+  }
+  if (!any(profile$time_h == 0)) {
+    profile <- bind_rows(
+      tibble(time_h = 0, concentration = first(profile$concentration)),
+      profile
+    ) |>
+      arrange(.data$time_h)
+  }
+
+  positive <- profile |> filter(.data$concentration > 0)
+  c_last <- last(positive$concentration)
+  linup_logdown_auc(profile$time_h, profile$concentration) + c_last / lambda_z
+}
+
+calculate_profile_endpoints <- function(
+  time_h,
+  concentration,
+  dose_mg_kg,
+  body_weight_kg
+) {
+  lambda_z <- best_terminal_lambda_z(time_h, concentration)
+  auc_inf <- auc_inf_ug_h_ml(time_h, concentration, lambda_z)
+  tibble(
+    AUC0_28d_ug_h_mL = linup_logdown_auc(time_h, concentration),
+    Cmax_ug_mL = max(concentration, na.rm = TRUE),
+    Lambda_z_1_h = lambda_z,
+    AUCinf_ug_h_mL = auc_inf,
+    Terminal_CL_L_day = if (
+      is.finite(auc_inf) && auc_inf > 0 &&
+        is.finite(body_weight_kg) && body_weight_kg > 0
+    ) {
+      24 * dose_mg_kg * body_weight_kg / auc_inf
+    } else {
+      NA_real_
+    }
+  )
+}
+
+required_endpoint_columns <- c(
+  "AUC0_28d_ug_h_mL", "Cmax_ug_mL", "Terminal_CL_L_day"
+)
+endpoint_names <- c(
+  AUC0_28d_ug_h_mL = "AUC0-28d",
+  Cmax_ug_mL = "Cmax",
+  Terminal_CL_L_day = "Terminal clearance"
+)
+```
+
+# Step 2 Calculate the nominal typical-subject reference endpoints
+
+The nominal reference is evaluated with the same dense-grid endpoint rules as
+the replicate-matched truth. It uses central truth-model inputs and the typical
+monkey physiology configured in each model. It does not vary by CV or parameter
+replicate.
+
+```{r}
+#| label: calculate-nominal-typical-reference
+
+nominal_profiles <- nominal_reference$profiles |>
+  left_join(
+    step1$molecular_weights |>
+      select(.data$Molecule, .data$MW_g_mol),
+    by = "Molecule"
+  ) |>
+  mutate(Conc_ug_mL = .data$Conc_umol_L * .data$MW_g_mol / 1000)
+
+if (any(!is.finite(nominal_profiles$MW_g_mol)) ||
+    any(nominal_profiles$MW_g_mol <= 0) ||
+    any(!is.finite(nominal_profiles$Conc_ug_mL)) ||
+    any(nominal_profiles$Conc_ug_mL < 0)) {
+  stop("The nominal typical-subject profiles contain invalid concentrations.")
+}
+
+nominal_reference_endpoints <- nominal_profiles |>
+  group_by(
+    .data$Molecule,
+    .data$Dose_mg_kg,
+    .data$BodyWeight_kg,
+    .data$Target_reference_concentration_internal
+  ) |>
+  group_modify(~ calculate_profile_endpoints(
+    time_h = .x$Time_h,
+    concentration = .x$Conc_ug_mL,
+    dose_mg_kg = .y$Dose_mg_kg,
+    body_weight_kg = .y$BodyWeight_kg
+  )) |>
+  ungroup() |>
+  arrange(
+    factor(.data$Molecule, levels = settings$molecules),
+    .data$Dose_mg_kg
+  )
+
+expected_nominal_rows <- length(settings$molecules) *
+  length(settings$doses_mg_kg)
+nominal_endpoint_values <- nominal_reference_endpoints |>
+  select(all_of(c(
+    required_endpoint_columns,
+    "Lambda_z_1_h",
+    "AUCinf_ug_h_mL"
+  ))) |>
+  as.matrix()
+if (nrow(nominal_reference_endpoints) != expected_nominal_rows ||
+    anyDuplicated(nominal_reference_endpoints[c(
+      "Molecule", "Dose_mg_kg"
+    )]) > 0L ||
+    any(!is.finite(nominal_endpoint_values)) ||
+    any(nominal_endpoint_values <= 0)) {
+  stop("The nominal typical-subject endpoint table is incomplete or invalid.")
+}
+write_csv(nominal_reference_endpoints, NOMINAL_REFERENCE_ENDPOINT_FILE)
+
+nominal_reference_long <- nominal_reference_endpoints |>
+  pivot_longer(
+    cols = all_of(required_endpoint_columns),
+    names_to = "Endpoint_code",
+    values_to = "Nominal_typical_value"
+  ) |>
+  mutate(
+    Endpoint = unname(endpoint_names[.data$Endpoint_code]),
+    Endpoint = factor(.data$Endpoint, levels = ENDPOINT_LEVELS)
+  ) |>
+  select(
+    .data$Molecule,
+    .data$Dose_mg_kg,
+    .data$Endpoint,
+    .data$BodyWeight_kg,
+    .data$Target_reference_concentration_internal,
+    .data$Nominal_typical_value
+  )
+
+nominal_reference_endpoints |>
+  mutate(across(where(is.numeric), ~ signif(.x, 5))) |>
+  kable(caption = "Nominal typical-subject dense reference endpoints")
+```
+
+# Step 3 Stream simulation checkpoints into endpoint checkpoints
+
+Endpoint checkpoints make post-processing resumable without copying the much
+larger concentration-time tables into a single object.
+
+```{r}
+#| label: calculate-individual-endpoints
+
+calculate_endpoint_set <- function(profiles) {
+  profiles |>
+    group_by(
+      .data$Molecule,
+      .data$Variability_CV,
+      .data$Replicate,
+      .data$PopulationIndividualId,
+      .data$Monkey_index,
+      .data$TruthProfileId,
+      .data$Dose_mg_kg,
+      .data$BodyWeight_kg,
+      .data$Target_reference_concentration_internal
+    ) |>
+    group_modify(~ calculate_profile_endpoints(
+      time_h = .x$Time_h,
+      concentration = .x$Conc_ug_mL,
+      dose_mg_kg = .y$Dose_mg_kg,
+      body_weight_kg = .y$BodyWeight_kg
+    )) |>
+    ungroup()
+}
+
+endpoint_checkpoint_path <- function(checkpoint_key) {
+  file.path(CHECKPOINT_DIR, paste0(checkpoint_key, "_endpoints.rds"))
+}
+
+endpoint_checkpoint_is_valid <- function(
+  endpoint_checkpoint,
+  simulation_checkpoint_md5,
+  expected_profiles
+) {
+  if (!is.list(endpoint_checkpoint) ||
+      !identical(endpoint_checkpoint$format_version, 2L) ||
+      !identical(
+        endpoint_checkpoint$simulation_checkpoint_md5,
+        simulation_checkpoint_md5
+      ) ||
+      nrow(endpoint_checkpoint$individual_endpoints) != expected_profiles) {
+    return(FALSE)
+  }
+  endpoint_values <- endpoint_checkpoint$individual_endpoints |>
+    select(
+      all_of(paste0("Dense_", required_endpoint_columns)),
+      all_of(paste0("Sparse_", required_endpoint_columns))
+    ) |>
+    as.matrix()
+  all(is.finite(endpoint_values)) && all(endpoint_values > 0)
+}
+
+individual_endpoint_parts <- vector(
+  "list",
+  nrow(step2$checkpoint_inventory)
+)
+endpoint_checkpoint_rows <- vector(
+  "list",
+  nrow(step2$checkpoint_inventory)
+)
+
+for (checkpoint_number in seq_len(nrow(step2$checkpoint_inventory))) {
+  inventory_row <- step2$checkpoint_inventory[
+    checkpoint_number,
+    ,
+    drop = FALSE
+  ]
+  simulation_checkpoint_file <- inventory_row$Checkpoint_file[[1]]
+  simulation_checkpoint_md5 <- unname(tools::md5sum(
+    simulation_checkpoint_file
+  ))
+  if (!identical(simulation_checkpoint_md5, inventory_row$MD5[[1]])) {
+    stop("A Step 2 checkpoint checksum changed: ", simulation_checkpoint_file)
+  }
+
+  endpoint_file <- endpoint_checkpoint_path(
+    inventory_row$Checkpoint_key[[1]]
+  )
+  endpoint_checkpoint <- NULL
+  if (file.exists(endpoint_file) && !FORCE_RERUN) {
+    endpoint_checkpoint <- tryCatch(
+      readRDS(endpoint_file),
+      error = function(e) NULL
+    )
+  }
+
+  if (!is.null(endpoint_checkpoint) && endpoint_checkpoint_is_valid(
+    endpoint_checkpoint,
+    simulation_checkpoint_md5,
+    inventory_row$Successful_profiles[[1]]
+  )) {
+    message(
+      "Endpoint checkpoint ", checkpoint_number, "/",
+      nrow(step2$checkpoint_inventory), " loaded: ",
+      basename(endpoint_file)
+    )
+  } else {
+    message(
+      "Calculating endpoint checkpoint ", checkpoint_number, "/",
+      nrow(step2$checkpoint_inventory), "."
+    )
+    simulation_checkpoint <- readRDS(simulation_checkpoint_file)
+    if (nrow(simulation_checkpoint$failures) !=
+        inventory_row$Failed_profiles[[1]] ||
+        n_distinct(simulation_checkpoint$profiles$TruthProfileId) !=
+          inventory_row$Successful_profiles[[1]]) {
+      stop("A Step 2 checkpoint disagrees with its profile inventory.")
+    }
+
+    mw <- step1$molecular_weights |>
+      filter(.data$Molecule == simulation_checkpoint$molecule) |>
+      pull(.data$MW_g_mol)
+    if (length(mw) != 1L || !is.finite(mw) || mw <= 0) {
+      stop("A unique positive molecular weight was not found.")
+    }
+
+    profiles <- simulation_checkpoint$profiles |>
+      mutate(Conc_ug_mL = .data$Conc_umol_L * mw / 1000)
+    dense_endpoints <- calculate_endpoint_set(profiles) |>
+      rename_with(~ paste0("Dense_", .x), all_of(c(
+        required_endpoint_columns,
+        "Lambda_z_1_h", "AUCinf_ug_h_mL"
+      )))
+    sparse_endpoints <- profiles |>
+      filter(.data$Time_h %in% settings$sparse_time_h) |>
+      calculate_endpoint_set() |>
+      rename_with(~ paste0("Sparse_", .x), all_of(c(
+        required_endpoint_columns,
+        "Lambda_z_1_h", "AUCinf_ug_h_mL"
+      )))
+
+    endpoint_keys <- c(
+      "Molecule", "Variability_CV", "Replicate",
+      "PopulationIndividualId", "Monkey_index", "TruthProfileId",
+      "Dose_mg_kg", "BodyWeight_kg",
+      "Target_reference_concentration_internal"
+    )
+    individual_endpoints <- left_join(
+      dense_endpoints,
+      sparse_endpoints,
+      by = endpoint_keys
+    )
+
+    endpoint_checkpoint <- list(
+      format_version = 2L,
+      simulation_checkpoint_md5 = simulation_checkpoint_md5,
+      checkpoint_key = inventory_row$Checkpoint_key[[1]],
+      individual_endpoints = individual_endpoints,
+      excluded_failures = simulation_checkpoint$failures,
+      created_at = Sys.time()
+    )
+    if (!endpoint_checkpoint_is_valid(
+      endpoint_checkpoint,
+      simulation_checkpoint_md5,
+      inventory_row$Successful_profiles[[1]]
+    )) {
+      stop(
+        "Dense or sparse endpoint validation failed for ",
+        inventory_row$Checkpoint_key[[1]], "."
+      )
+    }
+    atomic_save_rds(endpoint_checkpoint, endpoint_file)
+    rm(
+      simulation_checkpoint,
+      profiles,
+      dense_endpoints,
+      sparse_endpoints,
+      individual_endpoints
+    )
+    invisible(gc())
+  }
+
+  individual_endpoint_parts[[checkpoint_number]] <-
+    endpoint_checkpoint$individual_endpoints
+  endpoint_checkpoint_rows[[checkpoint_number]] <- tibble(
+    Checkpoint_key = inventory_row$Checkpoint_key[[1]],
+    Simulation_checkpoint_MD5 = simulation_checkpoint_md5,
+    Endpoint_checkpoint_file = normalizePath(
+      endpoint_file,
+      winslash = "/",
+      mustWork = TRUE
+    ),
+    Individual_profiles = nrow(endpoint_checkpoint$individual_endpoints),
+    Bytes = file.info(endpoint_file)$size,
+    MD5 = unname(tools::md5sum(endpoint_file))
+  )
+}
+
+individual_endpoints <- bind_rows(individual_endpoint_parts) |>
+  arrange(
+    factor(.data$Molecule, levels = settings$molecules),
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Dose_mg_kg,
+    .data$Monkey_index
+  )
+endpoint_checkpoint_inventory <- bind_rows(endpoint_checkpoint_rows)
+
+planned_individual_rows <- length(settings$molecules) *
+  length(settings$variability_cv) * settings$n_replicates *
+  length(settings$doses_mg_kg) * settings$n_population_animals
+expected_individual_rows <- sum(expected_truth_counts$Expected_monkeys_in_truth)
+if (expected_individual_rows !=
+    planned_individual_rows - nrow(failed_profile_exclusions)) {
+  stop("The expected profile count does not reconcile with the exclusions.")
+}
+if (nrow(individual_endpoints) != expected_individual_rows ||
+    anyDuplicated(individual_endpoints[c(
+      "Molecule", "Variability_CV", "Replicate",
+      "Dose_mg_kg", "PopulationIndividualId"
+    )]) > 0L) {
+  stop("The combined individual endpoint table is incomplete or duplicated.")
+}
+
+write_csv(individual_endpoints, INDIVIDUAL_ENDPOINT_FILE)
+write_csv(
+  endpoint_checkpoint_inventory,
+  ENDPOINT_CHECKPOINT_INVENTORY_FILE
+)
+```
+
+# Step 4 Calculate replicate-matched dense truth
+
+The reference for a sparse estimate is the arithmetic mean of the evaluable
+dense individual endpoints generated under that exact parameter draw and dose.
+This is normally 50 monkeys. A cell with a documented Step 2 failure uses the
+remaining evaluable monkeys, and its sparse sampling pool uses that same eligible
+set. The reference is not a nominal-model endpoint and is not pooled across
+parameter replicates.
+
+```{r}
+#| label: calculate-replicate-matched-truth
+
+dense_endpoint_columns <- paste0("Dense_", required_endpoint_columns)
+sparse_endpoint_columns <- paste0("Sparse_", required_endpoint_columns)
+
+population_truth <- individual_endpoints |>
+  group_by(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Dose_mg_kg
+  ) |>
+  summarise(
+    Monkeys_in_truth = n(),
+    across(all_of(dense_endpoint_columns), mean),
+    .groups = "drop"
+  ) |>
+  left_join(
+    expected_truth_counts,
+    by = c("Molecule", "Variability_CV", "Replicate", "Dose_mg_kg"),
+    relationship = "one-to-one"
+  ) |>
+  pivot_longer(
+    cols = all_of(dense_endpoint_columns),
+    names_to = "Endpoint_code",
+    values_to = "Dense_truth_value"
+  ) |>
+  mutate(
+    Endpoint_code = sub("^Dense_", "", .data$Endpoint_code),
+    Endpoint = unname(endpoint_names[.data$Endpoint_code]),
+    Endpoint = factor(.data$Endpoint, levels = ENDPOINT_LEVELS)
+  ) |>
+  select(-.data$Endpoint_code)
+
+if (n_distinct(
+      population_truth$Molecule,
+      population_truth$Variability_CV,
+      population_truth$Replicate,
+      population_truth$Dose_mg_kg
+    ) != nrow(expected_truth_counts) ||
+    any(population_truth$Monkeys_in_truth !=
+        population_truth$Expected_monkeys_in_truth) ||
+    any(!is.finite(population_truth$Dense_truth_value)) ||
+    any(population_truth$Dense_truth_value <= 0)) {
+  stop("A replicate-matched dense truth cell is incomplete or invalid.")
+}
+write_csv(population_truth, POPULATION_TRUTH_FILE)
+
+population_truth |>
+  count(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Endpoint,
+    name = "Replicate_dose_truth_cells"
+  ) |>
+  mutate(`Variability CV (%)` = 100 * .data$Variability_CV) |>
+  select(
+    .data$Molecule,
+    `Variability CV (%)`,
+    .data$Endpoint,
+    .data$Replicate_dose_truth_cells
+  ) |>
+  kable(caption = "Replicate-matched dense truth inventory")
+
+population_truth |>
+  distinct(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Dose_mg_kg,
+    .data$Monkeys_in_truth,
+    .data$Excluded_profiles
+  ) |>
+  count(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Monkeys_in_truth,
+    .data$Excluded_profiles,
+    name = "Replicate_dose_cells"
+  ) |>
+  mutate(`Variability CV (%)` = 100 * .data$Variability_CV) |>
+  select(
+    .data$Molecule,
+    `Variability CV (%)`,
+    .data$Monkeys_in_truth,
+    .data$Excluded_profiles,
+    .data$Replicate_dose_cells
+  ) |>
+  kable(caption = "Dense-truth denominators after explicit exclusions")
+```
+
+# Step 5 Select distinct sparse-study monkeys
+
+Sampling is keyed only by molecule, CV, parameter replicate, dose, and group
+size and is restricted to profiles with evaluable dense and sparse endpoints.
+Consequently, the 1 mg/kg sample for a given group size is identical in the
+two-, three-, and five-dose candidate designs. This preserves paired design
+comparisons without forcing the same monkey to appear in different dose groups.
+
+```{r}
+#| label: select-sparse-study-monkeys
+
+sampling_cells <- individual_endpoints |>
+  distinct(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Dose_mg_kg
+  ) |>
+  crossing(N_per_group = settings$animals_per_group) |>
+  arrange(
+    factor(.data$Molecule, levels = settings$molecules),
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Dose_mg_kg,
+    .data$N_per_group
+  )
+
+sampling_assignments <- pmap_dfr(
+  sampling_cells,
+  function(Molecule, Variability_CV, Replicate, Dose_mg_kg, N_per_group) {
+    pool <- individual_endpoints |>
+      filter(
+        .data$Molecule == .env$Molecule,
+        .data$Variability_CV == .env$Variability_CV,
+        .data$Replicate == .env$Replicate,
+        .data$Dose_mg_kg == .env$Dose_mg_kg
+      ) |>
+      arrange(.data$Monkey_index)
+    if (nrow(pool) < N_per_group) {
+      stop("A sparse-study sampling pool is smaller than its group size.")
+    }
+
+    molecule_index <- match(Molecule, settings$molecules)
+    variability_index <- match(Variability_CV, settings$variability_cv)
+    dose_index <- match(Dose_mg_kg, settings$doses_mg_kg)
+    group_size_index <- match(N_per_group, settings$animals_per_group)
+    sampling_seed <- SAMPLING_SEED_BASE +
+      1000000L * molecule_index +
+      100000L * variability_index +
+      1000L * Replicate +
+      10L * dose_index + group_size_index
+    set.seed(sampling_seed)
+    selected_rows <- sample(
+      seq_len(nrow(pool)),
+      size = N_per_group,
+      replace = FALSE
+    )
+
+    pool[selected_rows, , drop = FALSE] |>
+      transmute(
+        Molecule = .env$Molecule,
+        Variability_CV = .env$Variability_CV,
+        Replicate = .env$Replicate,
+        Dose_mg_kg = .env$Dose_mg_kg,
+        N_per_group = as.integer(.env$N_per_group),
+        Available_monkeys = nrow(pool),
+        Sampling_seed = sampling_seed,
+        Draw = seq_len(N_per_group),
+        .data$PopulationIndividualId,
+        .data$Monkey_index,
+        .data$TruthProfileId
+      )
+  }
+)
+
+assignment_qc <- sampling_assignments |>
+  group_by(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Dose_mg_kg,
+    .data$N_per_group
+  ) |>
+  summarise(
+    Rows = n(),
+    Distinct_monkeys = n_distinct(.data$PopulationIndividualId),
+    Available_monkeys = first(.data$Available_monkeys),
+    .groups = "drop"
+  )
+if (any(assignment_qc$Rows != assignment_qc$N_per_group) ||
+    any(assignment_qc$Distinct_monkeys != assignment_qc$N_per_group) ||
+    any(assignment_qc$Available_monkeys < assignment_qc$N_per_group)) {
+  stop("At least one dose group contains a duplicate sampled monkey.")
+}
+write_csv(sampling_assignments, SAMPLING_ASSIGNMENT_FILE)
+```
+
+# Step 6 Estimate sparse-study endpoints and fold error
+
+```{r}
+#| label: calculate-replicate-matched-fold-error
+
+sparse_study_means <- sampling_assignments |>
+  left_join(
+    individual_endpoints |>
+      select(
+        .data$Molecule,
+        .data$Variability_CV,
+        .data$Replicate,
+        .data$Dose_mg_kg,
+        .data$TruthProfileId,
+        all_of(sparse_endpoint_columns)
+      ),
+    by = c(
+      "Molecule", "Variability_CV", "Replicate",
+      "Dose_mg_kg", "TruthProfileId"
+    )
+  ) |>
+  group_by(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Dose_mg_kg,
+    .data$N_per_group
+  ) |>
+  summarise(
+    Sampled_monkeys = n_distinct(.data$TruthProfileId),
+    across(all_of(sparse_endpoint_columns), mean),
+    .groups = "drop"
+  ) |>
+  pivot_longer(
+    cols = all_of(sparse_endpoint_columns),
+    names_to = "Endpoint_code",
+    values_to = "Sparse_study_value"
+  ) |>
+  mutate(
+    Endpoint_code = sub("^Sparse_", "", .data$Endpoint_code),
+    Endpoint = unname(endpoint_names[.data$Endpoint_code]),
+    Endpoint = factor(.data$Endpoint, levels = ENDPOINT_LEVELS)
+  ) |>
+  select(-.data$Endpoint_code)
+
+design_dose_manifest <- imap_dfr(
+  settings$design_doses,
+  ~ tibble(
+    Design = .y,
+    Dose_groups = length(.x),
+    Dose_mg_kg = .x
+  )
+)
+
+design_fold_error_replicates <- sparse_study_means |>
+  inner_join(
+    design_dose_manifest,
+    by = "Dose_mg_kg",
+    relationship = "many-to-many"
+  ) |>
+  left_join(
+    step1$design_manifest |>
+      select(
+        .data$Design,
+        .data$N_per_group,
+        .data$Total_animals
+      ),
+    by = c("Design", "N_per_group")
+  ) |>
+  left_join(
+    population_truth |>
+      select(
+        .data$Molecule,
+        .data$Variability_CV,
+        .data$Replicate,
+        .data$Dose_mg_kg,
+        .data$Endpoint,
+        .data$Monkeys_in_truth,
+        .data$Excluded_profiles,
+        .data$Expected_monkeys_in_truth,
+        .data$Dense_truth_value
+      ),
+    by = c(
+      "Molecule", "Variability_CV", "Replicate",
+      "Dose_mg_kg", "Endpoint"
+    )
+  ) |>
+  mutate(
+    Design = factor(.data$Design, levels = names(settings$design_doses)),
+    Endpoint = factor(.data$Endpoint, levels = ENDPOINT_LEVELS),
+    Fold_error = .data$Sparse_study_value / .data$Dense_truth_value,
+    Within_2fold = .data$Fold_error >= FOLD_LIMITS[1] &
+      .data$Fold_error <= FOLD_LIMITS[2]
+  ) |>
+  arrange(
+    factor(.data$Molecule, levels = settings$molecules),
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Design,
+    .data$N_per_group,
+    .data$Dose_mg_kg,
+    .data$Endpoint
+  )
+
+expected_fold_error_rows <- length(settings$molecules) *
+  length(settings$variability_cv) * settings$n_replicates *
+  length(settings$animals_per_group) *
+  sum(lengths(settings$design_doses)) * length(ENDPOINT_LEVELS)
+if (nrow(design_fold_error_replicates) != expected_fold_error_rows ||
+    any(!is.finite(design_fold_error_replicates$Fold_error)) ||
+    any(design_fold_error_replicates$Fold_error <= 0) ||
+    any(design_fold_error_replicates$Sampled_monkeys !=
+        design_fold_error_replicates$N_per_group) ||
+    any(design_fold_error_replicates$Monkeys_in_truth !=
+        design_fold_error_replicates$Expected_monkeys_in_truth) ||
+    any(design_fold_error_replicates$Monkeys_in_truth <
+        max(settings$animals_per_group))) {
+  stop("The replicate-matched fold-error table is incomplete or invalid.")
+}
+write_csv(design_fold_error_replicates, FOLD_ERROR_REPLICATE_FILE)
+
+nominal_fold_error_replicates <- design_fold_error_replicates |>
+  rename(
+    Replicate_matched_fold_error = Fold_error,
+    Replicate_matched_within_2fold = Within_2fold
+  ) |>
+  left_join(
+    nominal_reference_long |>
+      rename(
+        Nominal_typical_body_weight_kg = BodyWeight_kg,
+        Nominal_target_reference_concentration_internal =
+          Target_reference_concentration_internal
+      ),
+    by = c("Molecule", "Dose_mg_kg", "Endpoint"),
+    relationship = "many-to-one"
+  ) |>
+  mutate(
+    Dense_truth_to_nominal =
+      .data$Dense_truth_value / .data$Nominal_typical_value,
+    Fold_error = .data$Sparse_study_value / .data$Nominal_typical_value,
+    Within_2fold = .data$Fold_error >= FOLD_LIMITS[1] &
+      .data$Fold_error <= FOLD_LIMITS[2],
+    Reference = "Fixed nominal typical subject"
+  ) |>
+  arrange(
+    factor(.data$Molecule, levels = settings$molecules),
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Design,
+    .data$N_per_group,
+    .data$Dose_mg_kg,
+    .data$Endpoint
+  )
+
+decomposition_error <- abs(
+  nominal_fold_error_replicates$Fold_error -
+    nominal_fold_error_replicates$Replicate_matched_fold_error *
+      nominal_fold_error_replicates$Dense_truth_to_nominal
+)
+if (nrow(nominal_fold_error_replicates) != expected_fold_error_rows ||
+    any(!is.finite(nominal_fold_error_replicates$Nominal_typical_value)) ||
+    any(nominal_fold_error_replicates$Nominal_typical_value <= 0) ||
+    any(!is.finite(nominal_fold_error_replicates$Fold_error)) ||
+    any(nominal_fold_error_replicates$Fold_error <= 0) ||
+    any(decomposition_error > 1e-10)) {
+  stop("The nominal typical-subject fold-error table is incomplete or invalid.")
+}
+write_csv(
+  nominal_fold_error_replicates,
+  NOMINAL_FOLD_ERROR_REPLICATE_FILE
+)
+```
+
+# Step 7 Summarize primary and secondary performance
+
+```{r}
+#| label: summarize-study-design-performance
+
+summarize_fold_error <- function(fold_error_data) {
+  fold_error_data |>
+    group_by(
+      .data$Molecule,
+      .data$Variability_CV,
+      .data$Design,
+      .data$N_per_group,
+      .data$Total_animals,
+      .data$Dose_mg_kg,
+      .data$Endpoint
+    ) |>
+    summarise(
+      Replicates = n(),
+      Fraction_within_2fold = mean(.data$Within_2fold),
+      Mean_fold_error = mean(.data$Fold_error),
+      Geometric_mean_fold_error = exp(mean(log(.data$Fold_error))),
+      Relative_bias_percent = 100 * (mean(.data$Fold_error) - 1),
+      RMSE_percent = 100 * sqrt(mean((.data$Fold_error - 1)^2)),
+      Median_fold_error = median(.data$Fold_error),
+      Fold_error_5th_percentile = quantile(.data$Fold_error, 0.05),
+      Fold_error_95th_percentile = quantile(.data$Fold_error, 0.95),
+      .groups = "drop"
+    )
+}
+
+design_fold_error_summary <- summarize_fold_error(
+  design_fold_error_replicates
+)
+nominal_fold_error_summary <- summarize_fold_error(
+  nominal_fold_error_replicates
+)
+
+summarize_endpoint_success <- function(fold_error_data) {
+  fold_error_data |>
+    group_by(
+      .data$Molecule,
+      .data$Variability_CV,
+      .data$Replicate,
+      .data$Design,
+      .data$N_per_group,
+      .data$Total_animals,
+      .data$Endpoint
+    ) |>
+    summarise(
+      Dose_groups_evaluated = n(),
+      All_doses_within_2fold = all(.data$Within_2fold),
+      .groups = "drop"
+    ) |>
+    group_by(
+      .data$Molecule,
+      .data$Variability_CV,
+      .data$Design,
+      .data$N_per_group,
+      .data$Total_animals,
+      .data$Endpoint
+    ) |>
+    summarise(
+      Replicates = n(),
+      Fraction_within_2fold = mean(.data$All_doses_within_2fold),
+      .groups = "drop"
+    )
+}
+
+design_endpoint_success <- summarize_endpoint_success(
+  design_fold_error_replicates
+)
+nominal_endpoint_success <- summarize_endpoint_success(
+  nominal_fold_error_replicates
+)
+
+overall_design_success <- design_fold_error_replicates |>
+  group_by(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Design,
+    .data$N_per_group,
+    .data$Total_animals
+  ) |>
+  summarise(
+    Endpoint_dose_cells_evaluated = n(),
+    All_endpoints_and_doses_within_2fold = all(.data$Within_2fold),
+    .groups = "drop"
+  ) |>
+  group_by(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Design,
+    .data$N_per_group,
+    .data$Total_animals
+  ) |>
+  summarise(
+    Replicates = n(),
+    Fraction_within_2fold = mean(
+      .data$All_endpoints_and_doses_within_2fold
+    ),
+    .groups = "drop"
+  )
+
+analysis_qc <- design_fold_error_replicates |>
+  group_by(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Design,
+    .data$N_per_group,
+    .data$Endpoint
+  ) |>
+  summarise(
+    Parameter_replicates = n_distinct(.data$Replicate),
+    Dose_groups = n_distinct(.data$Dose_mg_kg),
+    Fold_error_rows = n(),
+    Dense_truth_monkeys_per_cell = paste(
+      sort(unique(.data$Monkeys_in_truth)),
+      collapse = ","
+    ),
+    Excluded_profiles_per_truth_cell = paste(
+      sort(unique(.data$Excluded_profiles)),
+      collapse = ","
+    ),
+    Sparse_monkeys_per_group = paste(
+      sort(unique(.data$Sampled_monkeys)),
+      collapse = ","
+    ),
+    .groups = "drop"
+  )
+
+if (any(analysis_qc$Parameter_replicates != settings$n_replicates) ||
+    any(analysis_qc$Fold_error_rows !=
+        analysis_qc$Parameter_replicates * analysis_qc$Dose_groups)) {
+  stop("The analysis denominators do not match the approved design.")
+}
+if (any(nominal_fold_error_summary$Replicates != settings$n_replicates) ||
+    any(nominal_endpoint_success$Replicates != settings$n_replicates) ||
+    any(!is.finite(nominal_fold_error_summary$Mean_fold_error)) ||
+    any(!is.finite(nominal_fold_error_summary$Fraction_within_2fold))) {
+  stop("The nominal-reference summary denominators are invalid.")
+}
+
+write_csv(design_fold_error_summary, FOLD_ERROR_SUMMARY_FILE)
+write_csv(nominal_fold_error_summary, NOMINAL_FOLD_ERROR_SUMMARY_FILE)
+write_csv(design_endpoint_success, ENDPOINT_SUCCESS_FILE)
+write_csv(overall_design_success, OVERALL_SUCCESS_FILE)
+write_csv(analysis_qc, ANALYSIS_QC_FILE)
+
+design_endpoint_success |>
+  mutate(
+    `Variability CV (%)` = 100 * .data$Variability_CV,
+    Fraction_within_2fold = round(.data$Fraction_within_2fold, 3)
+  ) |>
+  select(
+    .data$Molecule,
+    `Variability CV (%)`,
+    .data$Design,
+    .data$N_per_group,
+    .data$Total_animals,
+    .data$Endpoint,
+    .data$Replicates,
+    .data$Fraction_within_2fold
+  ) |>
+  kable(
+    caption = paste(
+      "Fraction of parameter-draw replicates with every selected dose",
+      "within two-fold, by endpoint"
+    )
+  )
+
+nominal_endpoint_success |>
+  mutate(
+    `Variability CV (%)` = 100 * .data$Variability_CV,
+    Fraction_within_2fold = round(.data$Fraction_within_2fold, 3)
+  ) |>
+  select(
+    .data$Molecule,
+    `Variability CV (%)`,
+    .data$Design,
+    .data$N_per_group,
+    .data$Total_animals,
+    .data$Endpoint,
+    .data$Replicates,
+    .data$Fraction_within_2fold
+  ) |>
+  kable(
+    caption = paste(
+      "Fraction of parameter-draw replicates with every selected dose",
+      "within two-fold of the fixed nominal typical-subject reference"
+    )
+  )
+```
+
+# Step 8 Plot primary and secondary fold error
+
+```{r}
+#| label: plot-fold-error
+#| fig-width: 17
+#| fig-height: 16
+
+sample_size_colors <- c(
+  `2` = "#76B947",
+  `3` = "#2596A6",
+  `6` = "#6554A4"
+)
+plot_data <- design_fold_error_replicates |>
+  mutate(
+    Variability = factor(
+      paste0(100 * .data$Variability_CV, "% CV"),
+      levels = rev(paste0(100 * settings$variability_cv, "% CV"))
+    ),
+    Animals = factor(
+      .data$N_per_group,
+      levels = settings$animals_per_group
+    )
+  )
+
+fold_error_plot <- ggplot(
+  plot_data,
+  aes(
+    x = .data$Fold_error,
+    y = .data$Variability,
+    fill = .data$Animals,
+    color = .data$Animals
+  )
+) +
+  geom_vline(xintercept = 1, color = "grey30", linewidth = 0.75) +
+  geom_vline(
+    xintercept = FOLD_LIMITS,
+    color = "#C62828",
+    linetype = 2,
+    linewidth = 0.85
+  ) +
+  geom_boxplot(
+    width = 0.66,
+    outlier.shape = NA,
+    alpha = 0.62,
+    linewidth = 0.6,
+    position = position_dodge2(
+      width = 0.78,
+      padding = 0.10,
+      preserve = "single"
+    )
+  ) +
+  scale_x_log10(
+    breaks = c(0.5, 0.75, 1, 1.5, 2),
+    labels = label_number(accuracy = 0.01)
+  ) +
+  coord_cartesian(xlim = c(0.47, 2.08), clip = "off") +
+  scale_fill_manual(values = sample_size_colors) +
+  scale_color_manual(values = sample_size_colors, guide = "none") +
+  facet_grid(
+    rows = vars(.data$Molecule, .data$Endpoint),
+    cols = vars(.data$Design)
+  ) +
+  labs(
+    x = "Sparse study endpoint / replicate-matched dense population truth",
+    y = NULL,
+    fill = "Monkeys per dose",
+    title = "Replicate-matched study-design fold error",
+    subtitle = paste(
+      "Solid line: exact agreement; dashed lines: 0.5- to 2-fold;",
+      "boxes pool design doses"
+    )
+  ) +
+  theme_bw(base_size = 10.5) +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+fold_error_plot
+ggsave(
+  FOLD_ERROR_FIGURE,
+  fold_error_plot,
+  width = 17,
+  height = 16,
+  dpi = 300,
+  bg = "white"
+)
+
+nominal_plot_data <- nominal_fold_error_replicates |>
+  mutate(
+    Variability = factor(
+      paste0(100 * .data$Variability_CV, "% CV"),
+      levels = rev(paste0(100 * settings$variability_cv, "% CV"))
+    ),
+    Animals = factor(
+      .data$N_per_group,
+      levels = settings$animals_per_group
+    )
+  )
+nominal_plot_limits <- range(c(
+  FOLD_LIMITS,
+  quantile(
+    nominal_plot_data$Fold_error,
+    probs = c(0.005, 0.995),
+    names = FALSE
+  )
+))
+nominal_plot_limits <- nominal_plot_limits * c(0.95, 1.05)
+nominal_breaks <- c(0.1, 0.2, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5, 10)
+nominal_breaks <- nominal_breaks[
+  nominal_breaks >= nominal_plot_limits[1] &
+    nominal_breaks <= nominal_plot_limits[2]
+]
+
+nominal_fold_error_plot <- ggplot(
+  nominal_plot_data,
+  aes(
+    x = .data$Fold_error,
+    y = .data$Variability,
+    fill = .data$Animals,
+    color = .data$Animals
+  )
+) +
+  geom_vline(xintercept = 1, color = "grey30", linewidth = 0.75) +
+  geom_vline(
+    xintercept = FOLD_LIMITS,
+    color = "#C62828",
+    linetype = 2,
+    linewidth = 0.85
+  ) +
+  geom_boxplot(
+    width = 0.66,
+    outlier.shape = NA,
+    alpha = 0.62,
+    linewidth = 0.6,
+    position = position_dodge2(
+      width = 0.78,
+      padding = 0.10,
+      preserve = "single"
+    )
+  ) +
+  scale_x_log10(
+    breaks = nominal_breaks,
+    labels = label_number(accuracy = 0.01)
+  ) +
+  coord_cartesian(xlim = nominal_plot_limits, clip = "off") +
+  scale_fill_manual(values = sample_size_colors) +
+  scale_color_manual(values = sample_size_colors, guide = "none") +
+  facet_grid(
+    rows = vars(.data$Molecule, .data$Endpoint),
+    cols = vars(.data$Design)
+  ) +
+  labs(
+    x = "Sparse study endpoint / fixed nominal typical-subject endpoint",
+    y = NULL,
+    fill = "Monkeys per dose",
+    title = "Nominal-reference total predictive fold deviation",
+    subtitle = paste(
+      "Solid line: nominal agreement; dashed lines: 0.5- to 2-fold;",
+      "display spans the 0.5th to 99.5th percentiles and both limits"
+    )
+  ) +
+  theme_bw(base_size = 10.5) +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+nominal_fold_error_plot
+ggsave(
+  NOMINAL_FOLD_ERROR_FIGURE,
+  nominal_fold_error_plot,
+  width = 17,
+  height = 16,
+  dpi = 300,
+  bg = "white"
+)
+```
+
+# Step 9 Save the consolidated post-processing record
+
+```{r}
+#| label: save-step3-record
+
+settings_table <- tribble(
+  ~Setting, ~Value,
+  "Step 1 input MD5", STEP1_INPUT_MD5,
+  "Step 2 index MD5", unname(tools::md5sum(STEP2_INDEX_RDS)),
+  "Parameter-draw replicates per molecule and CV",
+    as.character(settings$n_replicates),
+  "Planned dense truth monkeys per replicate and dose",
+    as.character(settings$n_population_animals),
+  "Observed dense truth monkey counts after exclusions",
+    paste(sort(unique(population_truth$Monkeys_in_truth)), collapse = ", "),
+  "Step 2 failed profiles excluded", as.character(
+    nrow(failed_profile_exclusions)
+  ),
+  "Matched truth cells with exclusions", as.character(
+    nrow(failed_profile_cells)
+  ),
+  "Failure exclusion scope",
+    "matched molecule, CV, replicate, and dose only; other doses retained",
+  "Sparse monkeys per dose group",
+    paste(settings$animals_per_group, collapse = ", "),
+  "Sparse sampling within dose", "without replacement",
+  "Monkey reuse across dose groups", "allowed",
+  "Primary truth matching",
+    "same molecule, CV, parameter replicate, and dose",
+  "Secondary reference",
+    "fixed dense nominal typical subject by molecule and dose",
+  "Sampling seed base", as.character(SAMPLING_SEED_BASE),
+  "Force endpoint recalculation", as.character(FORCE_RERUN)
+)
+write_csv(settings_table, SETTINGS_FILE)
+
+results_record <- list(
+  format_version = 3L,
+  workflow_stage = "Step 3: post-process results",
+  settings = settings_table,
+  failed_profile_exclusions = failed_profile_exclusions,
+  expected_truth_counts = expected_truth_counts,
+  endpoint_checkpoint_inventory = endpoint_checkpoint_inventory,
+  individual_endpoints = individual_endpoints,
+  population_truth = population_truth,
+  nominal_reference_endpoints = nominal_reference_endpoints,
+  sampling_assignments = sampling_assignments,
+  replicate_fold_error = design_fold_error_replicates,
+  fold_error_summary = design_fold_error_summary,
+  nominal_fold_error = nominal_fold_error_replicates,
+  nominal_fold_error_summary = nominal_fold_error_summary,
+  endpoint_success = design_endpoint_success,
+  nominal_endpoint_success = nominal_endpoint_success,
+  overall_success = overall_design_success,
+  analysis_qc = analysis_qc
+)
+saveRDS(results_record, RESULTS_RDS, compress = "xz")
+
+artifact_paths <- c(
+  RESULTS_RDS,
+  INDIVIDUAL_ENDPOINT_FILE,
+  POPULATION_TRUTH_FILE,
+  SAMPLING_ASSIGNMENT_FILE,
+  FOLD_ERROR_REPLICATE_FILE,
+  FOLD_ERROR_SUMMARY_FILE,
+  NOMINAL_REFERENCE_ENDPOINT_FILE,
+  NOMINAL_FOLD_ERROR_REPLICATE_FILE,
+  NOMINAL_FOLD_ERROR_SUMMARY_FILE,
+  ENDPOINT_SUCCESS_FILE,
+  OVERALL_SUCCESS_FILE,
+  ANALYSIS_QC_FILE,
+  FAILED_PROFILE_EXCLUSION_FILE,
+  ENDPOINT_CHECKPOINT_INVENTORY_FILE,
+  SETTINGS_FILE,
+  PACKAGE_FILE,
+  FOLD_ERROR_FIGURE,
+  NOMINAL_FOLD_ERROR_FIGURE
+)
+artifact_manifest <- tibble(
+  Artifact = basename(artifact_paths),
+  Path = normalizePath(artifact_paths, winslash = "/", mustWork = TRUE),
+  Bytes = file.info(artifact_paths)$size,
+  MD5 = unname(tools::md5sum(artifact_paths))
+)
+write_csv(artifact_manifest, ARTIFACT_MANIFEST_FILE)
+
+loaded_results <- readRDS(RESULTS_RDS)
+if (!identical(loaded_results$analysis_qc, analysis_qc) ||
+    !identical(
+      loaded_results$failed_profile_exclusions,
+      failed_profile_exclusions
+    ) ||
+    !identical(loaded_results$population_truth, population_truth) ||
+    !identical(
+      loaded_results$nominal_reference_endpoints,
+      nominal_reference_endpoints
+    ) ||
+    !identical(
+      loaded_results$nominal_fold_error_summary,
+      nominal_fold_error_summary
+    )) {
+  stop("The saved Step 3 record failed its round-trip validation.")
+}
+
+artifact_manifest |>
+  select(.data$Artifact, .data$Bytes, .data$MD5) |>
+  kable(caption = "Step 3 artifacts and checksums")
+
+sessionInfo()
+```

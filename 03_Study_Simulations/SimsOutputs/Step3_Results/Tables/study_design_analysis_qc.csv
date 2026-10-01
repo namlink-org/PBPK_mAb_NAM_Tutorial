@@ -1,0 +1,109 @@
+Molecule,Variability_CV,Design,N_per_group,Endpoint,Parameter_replicates,Dose_groups,Fold_error_rows,Dense_truth_monkeys_per_cell,Excluded_profiles_per_truth_cell,Sparse_monkeys_per_group
+Golimumab,0.3,2 dose groups,2,AUC0-28d,100,2,200,50,0,2
+Golimumab,0.3,2 dose groups,2,Cmax,100,2,200,50,0,2
+Golimumab,0.3,2 dose groups,2,Terminal clearance,100,2,200,50,0,2
+Golimumab,0.3,2 dose groups,3,AUC0-28d,100,2,200,50,0,3
+Golimumab,0.3,2 dose groups,3,Cmax,100,2,200,50,0,3
+Golimumab,0.3,2 dose groups,3,Terminal clearance,100,2,200,50,0,3
+Golimumab,0.3,2 dose groups,6,AUC0-28d,100,2,200,50,0,6
+Golimumab,0.3,2 dose groups,6,Cmax,100,2,200,50,0,6
+Golimumab,0.3,2 dose groups,6,Terminal clearance,100,2,200,50,0,6
+Golimumab,0.3,3 dose groups,2,AUC0-28d,100,3,300,50,0,2
+Golimumab,0.3,3 dose groups,2,Cmax,100,3,300,50,0,2
+Golimumab,0.3,3 dose groups,2,Terminal clearance,100,3,300,50,0,2
+Golimumab,0.3,3 dose groups,3,AUC0-28d,100,3,300,50,0,3
+Golimumab,0.3,3 dose groups,3,Cmax,100,3,300,50,0,3
+Golimumab,0.3,3 dose groups,3,Terminal clearance,100,3,300,50,0,3
+Golimumab,0.3,3 dose groups,6,AUC0-28d,100,3,300,50,0,6
+Golimumab,0.3,3 dose groups,6,Cmax,100,3,300,50,0,6
+Golimumab,0.3,3 dose groups,6,Terminal clearance,100,3,300,50,0,6
+Golimumab,0.3,5 dose groups,2,AUC0-28d,100,5,500,"49,50","0,1",2
+Golimumab,0.3,5 dose groups,2,Cmax,100,5,500,"49,50","0,1",2
+Golimumab,0.3,5 dose groups,2,Terminal clearance,100,5,500,"49,50","0,1",2
+Golimumab,0.3,5 dose groups,3,AUC0-28d,100,5,500,"49,50","0,1",3
+Golimumab,0.3,5 dose groups,3,Cmax,100,5,500,"49,50","0,1",3
+Golimumab,0.3,5 dose groups,3,Terminal clearance,100,5,500,"49,50","0,1",3
+Golimumab,0.3,5 dose groups,6,AUC0-28d,100,5,500,"49,50","0,1",6
+Golimumab,0.3,5 dose groups,6,Cmax,100,5,500,"49,50","0,1",6
+Golimumab,0.3,5 dose groups,6,Terminal clearance,100,5,500,"49,50","0,1",6
+Golimumab,0.6,2 dose groups,2,AUC0-28d,100,2,200,50,0,2
+Golimumab,0.6,2 dose groups,2,Cmax,100,2,200,50,0,2
+Golimumab,0.6,2 dose groups,2,Terminal clearance,100,2,200,50,0,2
+Golimumab,0.6,2 dose groups,3,AUC0-28d,100,2,200,50,0,3
+Golimumab,0.6,2 dose groups,3,Cmax,100,2,200,50,0,3
+Golimumab,0.6,2 dose groups,3,Terminal clearance,100,2,200,50,0,3
+Golimumab,0.6,2 dose groups,6,AUC0-28d,100,2,200,50,0,6
+Golimumab,0.6,2 dose groups,6,Cmax,100,2,200,50,0,6
+Golimumab,0.6,2 dose groups,6,Terminal clearance,100,2,200,50,0,6
+Golimumab,0.6,3 dose groups,2,AUC0-28d,100,3,300,50,0,2
+Golimumab,0.6,3 dose groups,2,Cmax,100,3,300,50,0,2
+Golimumab,0.6,3 dose groups,2,Terminal clearance,100,3,300,50,0,2
+Golimumab,0.6,3 dose groups,3,AUC0-28d,100,3,300,50,0,3
+Golimumab,0.6,3 dose groups,3,Cmax,100,3,300,50,0,3
+Golimumab,0.6,3 dose groups,3,Terminal clearance,100,3,300,50,0,3
+Golimumab,0.6,3 dose groups,6,AUC0-28d,100,3,300,50,0,6
+Golimumab,0.6,3 dose groups,6,Cmax,100,3,300,50,0,6
+Golimumab,0.6,3 dose groups,6,Terminal clearance,100,3,300,50,0,6
+Golimumab,0.6,5 dose groups,2,AUC0-28d,100,5,500,"49,50","0,1",2
+Golimumab,0.6,5 dose groups,2,Cmax,100,5,500,"49,50","0,1",2
+Golimumab,0.6,5 dose groups,2,Terminal clearance,100,5,500,"49,50","0,1",2
+Golimumab,0.6,5 dose groups,3,AUC0-28d,100,5,500,"49,50","0,1",3
+Golimumab,0.6,5 dose groups,3,Cmax,100,5,500,"49,50","0,1",3
+Golimumab,0.6,5 dose groups,3,Terminal clearance,100,5,500,"49,50","0,1",3
+Golimumab,0.6,5 dose groups,6,AUC0-28d,100,5,500,"49,50","0,1",6
+Golimumab,0.6,5 dose groups,6,Cmax,100,5,500,"49,50","0,1",6
+Golimumab,0.6,5 dose groups,6,Terminal clearance,100,5,500,"49,50","0,1",6
+Nivolumab,0.3,2 dose groups,2,AUC0-28d,100,2,200,50,0,2
+Nivolumab,0.3,2 dose groups,2,Cmax,100,2,200,50,0,2
+Nivolumab,0.3,2 dose groups,2,Terminal clearance,100,2,200,50,0,2
+Nivolumab,0.3,2 dose groups,3,AUC0-28d,100,2,200,50,0,3
+Nivolumab,0.3,2 dose groups,3,Cmax,100,2,200,50,0,3
+Nivolumab,0.3,2 dose groups,3,Terminal clearance,100,2,200,50,0,3
+Nivolumab,0.3,2 dose groups,6,AUC0-28d,100,2,200,50,0,6
+Nivolumab,0.3,2 dose groups,6,Cmax,100,2,200,50,0,6
+Nivolumab,0.3,2 dose groups,6,Terminal clearance,100,2,200,50,0,6
+Nivolumab,0.3,3 dose groups,2,AUC0-28d,100,3,300,50,0,2
+Nivolumab,0.3,3 dose groups,2,Cmax,100,3,300,50,0,2
+Nivolumab,0.3,3 dose groups,2,Terminal clearance,100,3,300,50,0,2
+Nivolumab,0.3,3 dose groups,3,AUC0-28d,100,3,300,50,0,3
+Nivolumab,0.3,3 dose groups,3,Cmax,100,3,300,50,0,3
+Nivolumab,0.3,3 dose groups,3,Terminal clearance,100,3,300,50,0,3
+Nivolumab,0.3,3 dose groups,6,AUC0-28d,100,3,300,50,0,6
+Nivolumab,0.3,3 dose groups,6,Cmax,100,3,300,50,0,6
+Nivolumab,0.3,3 dose groups,6,Terminal clearance,100,3,300,50,0,6
+Nivolumab,0.3,5 dose groups,2,AUC0-28d,100,5,500,50,0,2
+Nivolumab,0.3,5 dose groups,2,Cmax,100,5,500,50,0,2
+Nivolumab,0.3,5 dose groups,2,Terminal clearance,100,5,500,50,0,2
+Nivolumab,0.3,5 dose groups,3,AUC0-28d,100,5,500,50,0,3
+Nivolumab,0.3,5 dose groups,3,Cmax,100,5,500,50,0,3
+Nivolumab,0.3,5 dose groups,3,Terminal clearance,100,5,500,50,0,3
+Nivolumab,0.3,5 dose groups,6,AUC0-28d,100,5,500,50,0,6
+Nivolumab,0.3,5 dose groups,6,Cmax,100,5,500,50,0,6
+Nivolumab,0.3,5 dose groups,6,Terminal clearance,100,5,500,50,0,6
+Nivolumab,0.6,2 dose groups,2,AUC0-28d,100,2,200,50,0,2
+Nivolumab,0.6,2 dose groups,2,Cmax,100,2,200,50,0,2
+Nivolumab,0.6,2 dose groups,2,Terminal clearance,100,2,200,50,0,2
+Nivolumab,0.6,2 dose groups,3,AUC0-28d,100,2,200,50,0,3
+Nivolumab,0.6,2 dose groups,3,Cmax,100,2,200,50,0,3
+Nivolumab,0.6,2 dose groups,3,Terminal clearance,100,2,200,50,0,3
+Nivolumab,0.6,2 dose groups,6,AUC0-28d,100,2,200,50,0,6
+Nivolumab,0.6,2 dose groups,6,Cmax,100,2,200,50,0,6
+Nivolumab,0.6,2 dose groups,6,Terminal clearance,100,2,200,50,0,6
+Nivolumab,0.6,3 dose groups,2,AUC0-28d,100,3,300,50,0,2
+Nivolumab,0.6,3 dose groups,2,Cmax,100,3,300,50,0,2
+Nivolumab,0.6,3 dose groups,2,Terminal clearance,100,3,300,50,0,2
+Nivolumab,0.6,3 dose groups,3,AUC0-28d,100,3,300,50,0,3
+Nivolumab,0.6,3 dose groups,3,Cmax,100,3,300,50,0,3
+Nivolumab,0.6,3 dose groups,3,Terminal clearance,100,3,300,50,0,3
+Nivolumab,0.6,3 dose groups,6,AUC0-28d,100,3,300,50,0,6
+Nivolumab,0.6,3 dose groups,6,Cmax,100,3,300,50,0,6
+Nivolumab,0.6,3 dose groups,6,Terminal clearance,100,3,300,50,0,6
+Nivolumab,0.6,5 dose groups,2,AUC0-28d,100,5,500,50,0,2
+Nivolumab,0.6,5 dose groups,2,Cmax,100,5,500,50,0,2
+Nivolumab,0.6,5 dose groups,2,Terminal clearance,100,5,500,50,0,2
+Nivolumab,0.6,5 dose groups,3,AUC0-28d,100,5,500,50,0,3
+Nivolumab,0.6,5 dose groups,3,Cmax,100,5,500,50,0,3
+Nivolumab,0.6,5 dose groups,3,Terminal clearance,100,5,500,50,0,3
+Nivolumab,0.6,5 dose groups,6,AUC0-28d,100,5,500,50,0,6
+Nivolumab,0.6,5 dose groups,6,Cmax,100,5,500,50,0,6
+Nivolumab,0.6,5 dose groups,6,Terminal clearance,100,5,500,50,0,6

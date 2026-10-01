@@ -1,0 +1,5 @@
+Timestamp,Molecule,Variability_CV,Dose_mg_kg,BatchId,Replicate,PopulationIndividualId,TruthProfileId,Error,Monkey_index,Dense_truth_monkeys_after_exclusion,Exclusion_rule,Analysis_action
+2026-09-29 11:08:43,Golimumab,0.3,3,2,16,12,Golimumab_cv30_rep016_monkey13,"`.main()`: no results exist for path ""Organism|PeripheralVenousBlood|mAb|Plasma (Peripheral Venous Blood)"" for individual ID !
+",13,49,No concentration-time output after Step 2 batch and single-profile retries,Excluded only from matched dense truth and sparse sampling at this dose; other doses retained
+2026-09-29 11:14:04,Golimumab,0.6,3,4,39,12,Golimumab_cv60_rep039_monkey13,"`.main()`: no results exist for path ""Organism|PeripheralVenousBlood|mAb|Plasma (Peripheral Venous Blood)"" for individual ID !
+",13,49,No concentration-time output after Step 2 batch and single-profile retries,Excluded only from matched dense truth and sparse sampling at this dose; other doses retained

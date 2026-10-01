@@ -1,0 +1,1396 @@
+---
+title: "Step 1: Prepare inputs for replicate-matched monkey study-design simulations"
+author: NAMLink
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: true
+prefer-html: true
+---
+
+# Purpose and review gate
+
+This first script prepares the complete, reproducible input record for the
+reanalysis. The reviewed full-scale configuration creates 50 virtual monkeys
+and 100 replicate-level parameter draws at each variability level without
+changing the approved analysis rules.
+
+One five-parameter draw is one Monte Carlo replicate. Within a replicate, the
+five values remain fixed across all monkeys and doses. Body weight and target
+reference concentration vary between monkeys.  
+
+This script does **not** run concentration-time simulations. Review the
+rendered report and saved input artifacts before proceeding to Step 2.
+Diagnostic tables remain in the HTML report. The only separate Step 1 files
+are the consolidated R object plus the parameter-draw, body-weight population,
+and target-population tables required downstream.
+
+```{r}
+#| label: setup
+
+rm(list = ls())
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(esqlabsR)
+  library(ggplot2)
+  library(knitr)
+  library(ospsuite)
+  library(purrr)
+  library(readr)
+  library(scales)
+  library(tibble)
+  library(tidyr)
+})
+
+find_project_root <- function(start = getwd()) {
+  current <- normalizePath(start, winslash = "/", mustWork = TRUE)
+  repeat {
+    required <- c(
+      file.path(current, "00_Data"),
+      file.path(current, "01_Models"),
+      file.path(current, "02_APriori_PBPK_Workflow"),
+      file.path(current, "03_Study_Simulations")
+    )
+    if (all(dir.exists(required))) return(current)
+    parent <- dirname(current)
+    if (identical(parent, current)) {
+      stop("Could not locate the PBPK_mAb_NAM_Tutorial project root.")
+    }
+    current <- parent
+  }
+}
+
+assert_files_exist <- function(paths, description = "Required input") {
+  missing <- paths[!file.exists(paths)]
+  if (length(missing) > 0L) {
+    stop(description, " is missing: ", paste(missing, collapse = "; "))
+  }
+  invisible(paths)
+}
+
+draw_lognormal_mean_cv <- function(n, arithmetic_mean, cv) {
+  if (!is.finite(arithmetic_mean) || arithmetic_mean <= 0) {
+    stop("A lognormal arithmetic mean must be positive and finite.")
+  }
+  if (!is.finite(cv) || cv < 0) {
+    stop("CV must be non-negative and finite.")
+  }
+  sdlog <- sqrt(log1p(cv^2))
+  meanlog <- log(arithmetic_mean) - 0.5 * sdlog^2
+  rlnorm(n, meanlog = meanlog, sdlog = sdlog)
+}
+
+PROJECT_ROOT <- find_project_root()
+APRIORI_DIR <- file.path(PROJECT_ROOT, "02_APriori_PBPK_Workflow")
+STUDY_DIR <- file.path(PROJECT_ROOT, "03_Study_Simulations")
+OUTPUT_DIR <- file.path(STUDY_DIR, "SimsOutputs", "Step1_Inputs")
+TABLE_DIR <- file.path(OUTPUT_DIR, "Tables")
+OBJECT_DIR <- file.path(OUTPUT_DIR, "Objects")
+
+walk(
+  c(OUTPUT_DIR, TABLE_DIR, OBJECT_DIR),
+  dir.create,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+MOLECULES <- c("Golimumab", "Nivolumab")
+SOURCE_SCENARIOS <- c(
+  Golimumab = "Golimumab_Monkey_3_mpk",
+  Nivolumab = "Nivolumab_Monkey_1_mpk"
+)
+SOURCE_DOSES_MG_KG <- c(Golimumab = 3, Nivolumab = 1)
+MODEL_FILES <- c(
+  Golimumab = "PKML_Files_Monkey/PKML_Files_Monkey/AntiTNFA.pkml",
+  Nivolumab = "PKML_Files_Monkey/PKML_Files_Monkey/AntiPD1.pkml"
+)
+TRUTH_MODEL_ROLES <- c(
+  Golimumab = "Nominal uncalibrated Golimumab truth",
+  Nivolumab = "Calibrated Nivolumab truth"
+)
+
+DOSES_MG_KG <- c(0.1, 1, 3, 10, 30)
+VARIABILITY_CV <- c(0.30, 0.60)
+
+# Full scale after review of the 10-replicate, 10-monkey pilot.
+N_REPLICATES <- 100L
+N_POPULATION_ANIMALS <- 50L
+N_REPLICATES_PER_BATCH <- 10L
+POPULATION_NAME <- "Monkey"
+POPULATION_SEED <- 20260919L
+PARAMETER_DRAW_SEED_BASE <- 20260919L
+TARGET_POPULATION_SEED_BASE <- 20261919L
+
+ANIMALS_PER_GROUP <- c(2L, 3L, 6L)
+DESIGN_DOSES <- list(
+  `2 dose groups` = c(1, 10),
+  `3 dose groups` = c(0.1, 1, 10),
+  `5 dose groups` = c(0.1, 1, 3, 10, 30)
+)
+
+AUC_END_H <- 28 * 24
+DENSE_TIME_H <- sort(unique(c(
+  seq(0.25, 8, by = 0.25),
+  seq(9, AUC_END_H, by = 1)
+)))
+SPARSE_TIME_H <- sort(unique(c(
+  0.25, 1, 2, 4, 8,
+  1, 2, 6, 10, 14, 21, 28
+) * c(rep(1, 5), rep(24, 7))))
+
+MAB_PLASMA_OUTPUT_PATH <-
+  "Organism|PeripheralVenousBlood|mAb|Plasma (Peripheral Venous Blood)"
+DOSE_PATH <-
+  "Events|IV_Bolus|Application_1|ProtocolSchemaItem|DosePerBodyWeight"
+PARAMETER_PATHS <- c(
+  `Kd (FcRn)` = "mAb|Kd (FcRn) in endosomal space",
+  `Target Kd` = "mAb-Target-InVitro|Kd",
+  koff = "mAb-Target-InVitro|koff",
+  kint = "Complex Internalization|kint",
+  kdeg = "Target degradation|kdeg"
+)
+TARGET_REFERENCE_PATH <- "Target|Reference concentration"
+WEIGHT_PATH <- "Organism|Weight"
+MODEL_INPUT_PATHS <- c(
+  PARAMETER_PATHS,
+  `Target reference concentration` = TARGET_REFERENCE_PATH
+)
+
+NIVOLUMAB_FCRN_KD_UMOL_L <- 0.39
+
+PROJECT_CONFIG_FILE <- file.path(APRIORI_DIR, "ProjectConfiguration.xlsx")
+POPULATION_CONFIG_FILE <- file.path(
+  APRIORI_DIR, "Configurations", "Populations.xlsx"
+)
+MONKEY_DATA_FILE <- file.path(
+  PROJECT_ROOT, "00_Data", "Monkey", "mAb_data.csv"
+)
+CALIBRATED_NIVOLUMAB_PROJECT_FILE <- file.path(
+  PROJECT_ROOT,
+  "01_Models", "PK-Sim_Mobi_Files_Monkey",
+  "AntiPD1_Nivo_Calibrated.mbp3"
+)
+MODEL_PATHS <- file.path(PROJECT_ROOT, "01_Models", unname(MODEL_FILES))
+
+STEP1_RDS <- file.path(
+  OBJECT_DIR,
+  "study_design_step1_inputs.rds"
+)
+BASE_POPULATION_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_base_monkey_population.csv"
+)
+MODEL_MANIFEST_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_model_manifest.csv"
+)
+PARAMETER_CENTER_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_parameter_centers.csv"
+)
+PARAMETER_DRAW_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_parameter_draws.csv"
+)
+PARAMETER_DRAW_DIAGNOSTIC_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_parameter_draw_diagnostics.csv"
+)
+TARGET_POPULATION_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_target_population.csv"
+)
+TARGET_POPULATION_DIAGNOSTIC_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_target_population_diagnostics.csv"
+)
+CROSSED_PROFILE_INDEX_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_crossed_profile_index.csv"
+)
+DESIGN_MANIFEST_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_candidate_designs.csv"
+)
+TIME_MANIFEST_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_time_grids.csv"
+)
+SIMULATION_MANIFEST_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_simulation_manifest.csv"
+)
+BATCH_MANIFEST_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_batch_manifest.csv"
+)
+SETTINGS_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_step1_settings.csv"
+)
+PACKAGE_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_software_versions.csv"
+)
+ARTIFACT_MANIFEST_FILE <- file.path(
+  TABLE_DIR,
+  "study_design_step1_artifact_manifest.csv"
+)
+
+assert_files_exist(
+  c(
+    PROJECT_CONFIG_FILE,
+    POPULATION_CONFIG_FILE,
+    MONKEY_DATA_FILE,
+    CALIBRATED_NIVOLUMAB_PROJECT_FILE,
+    MODEL_PATHS
+  ),
+  "Step 1 input"
+)
+
+package_record <- tibble(
+  Package = c(
+    "R", "dplyr", "esqlabsR", "ggplot2", "knitr",
+    "ospsuite", "purrr", "readr", "tibble", "tidyr"
+  ),
+  Version = c(
+    paste(R.version$major, R.version$minor, sep = "."),
+    map_chr(
+      c(
+        "dplyr", "esqlabsR", "ggplot2", "knitr", "ospsuite",
+        "purrr", "readr", "tibble", "tidyr"
+      ),
+      ~ as.character(packageVersion(.x))
+    )
+  )
+)
+
+package_record |>
+  kable(caption = "Software versions recorded for Step 1")
+```
+
+# Step 1 Define the truth models
+
+Golimumab uses its nominal, uncalibrated monkey model as truth. Nivolumab uses
+the same compiled Anti-PD1 model structure as the a priori scenario, but its
+FcRn binding-affinity center is changed from 1.07 to 0.39 micromol/L. The
+uncalibrated Nivolumab model is not simulated in this exercise.
+
+```{r}
+#| label: load-and-validate-truth-models
+
+project_configuration <- createProjectConfiguration(
+  path = PROJECT_CONFIG_FILE,
+  ignoreVersionCheck = TRUE
+)
+
+scenario_configurations <- readScenarioConfigurationFromExcel(
+  scenarioNames = unname(SOURCE_SCENARIOS),
+  projectConfiguration = project_configuration
+)
+
+scenarios <- createScenarios(
+  scenarioConfigurations = scenario_configurations
+)
+
+if (!setequal(names(scenarios), unname(SOURCE_SCENARIOS))) {
+  stop("The requested monkey truth-model templates were not created.")
+}
+
+canonical_micro_unit <- function(unit) {
+  tolower(gsub("\u03bc", "\u00b5", as.character(unit), fixed = TRUE))
+}
+
+inspect_truth_model_inputs <- function(molecule) {
+  scenario_name <- unname(SOURCE_SCENARIOS[[molecule]])
+  simulation <- scenarios[[scenario_name]]$simulation
+
+  map_dfr(names(MODEL_INPUT_PATHS), function(label) {
+    path <- unname(MODEL_INPUT_PATHS[[label]])
+    matches <- getAllParametersMatching(paths = path, container = simulation)
+    if (length(matches) != 1L) {
+      stop(
+        "Expected one match for ", label, " in ", molecule,
+        "; found ", length(matches), "."
+      )
+    }
+    if (isExplicitFormulaByPath(path = path, simulation = simulation)) {
+      stop(label, " is formula-defined in ", molecule, ".")
+    }
+
+    display_unit <- as.character(matches[[1]]$unit)
+    original_internal <- getQuantityValuesByPath(
+      quantityPaths = path,
+      simulation = simulation
+    )
+    original_display <- getQuantityValuesByPath(
+      quantityPaths = path,
+      simulation = simulation,
+      units = display_unit
+    )
+
+    override_applied <- molecule == "Nivolumab" && label == "Kd (FcRn)"
+    if (override_applied) {
+      if (canonical_micro_unit(display_unit) != "\u00b5mol/l") {
+        stop(
+          "Nivolumab FcRn Kd must use micromol/L as its display unit; found ",
+          display_unit, "."
+        )
+      }
+      setParameterValuesByPath(
+        parameterPaths = path,
+        values = NIVOLUMAB_FCRN_KD_UMOL_L,
+        simulation = simulation,
+        units = display_unit
+      )
+    }
+
+    truth_internal <- getQuantityValuesByPath(
+      quantityPaths = path,
+      simulation = simulation
+    )
+    truth_display <- getQuantityValuesByPath(
+      quantityPaths = path,
+      simulation = simulation,
+      units = display_unit
+    )
+
+    values_to_check <- c(
+      original_internal,
+      original_display,
+      truth_internal,
+      truth_display
+    )
+    if (length(values_to_check) != 4L ||
+        any(!is.finite(values_to_check)) ||
+        any(values_to_check <= 0)) {
+      stop("Expected positive finite values for ", label, " in ", molecule, ".")
+    }
+    if (override_applied &&
+        !isTRUE(all.equal(
+          as.numeric(truth_display),
+          NIVOLUMAB_FCRN_KD_UMOL_L,
+          tolerance = 1e-12
+        ))) {
+      stop("The calibrated Nivolumab FcRn-Kd override was not retained.")
+    }
+
+    tibble(
+      Molecule = molecule,
+      Parameter = label,
+      Path = path,
+      Original_configured_value_internal = as.numeric(original_internal),
+      Original_configured_value_display = as.numeric(original_display),
+      Truth_center_value_internal = as.numeric(truth_internal),
+      Truth_center_value_display = as.numeric(truth_display),
+      Display_unit = display_unit,
+      Truth_override_applied = override_applied
+    )
+  })
+}
+
+parameter_centers <- map_dfr(MOLECULES, inspect_truth_model_inputs)
+
+dose_inputs <- map_dfr(MOLECULES, function(molecule) {
+  scenario_name <- unname(SOURCE_SCENARIOS[[molecule]])
+  simulation <- scenarios[[scenario_name]]$simulation
+  matches <- getAllParametersMatching(paths = DOSE_PATH, container = simulation)
+  if (length(matches) != 1L ||
+      isExplicitFormulaByPath(path = DOSE_PATH, simulation = simulation)) {
+    stop("The dose path is not one explicit parameter in ", molecule, ".")
+  }
+  dose_value <- getQuantityValuesByPath(
+    quantityPaths = DOSE_PATH,
+    simulation = simulation,
+    units = "mg/kg"
+  )
+  if (length(dose_value) != 1L || !is.finite(dose_value) || dose_value <= 0) {
+    stop("The source dose is not positive and finite in ", molecule, ".")
+  }
+  if (!isTRUE(all.equal(
+    as.numeric(dose_value),
+    unname(SOURCE_DOSES_MG_KG[[molecule]]),
+    tolerance = 1e-10
+  ))) {
+    stop("The source dose does not match its recorded value for ", molecule, ".")
+  }
+  tibble(
+    Molecule = molecule,
+    Source_dose_mg_kg = as.numeric(dose_value),
+    Dose_path = DOSE_PATH
+  )
+})
+
+if (nrow(parameter_centers) != length(MOLECULES) * length(MODEL_INPUT_PATHS) ||
+    anyDuplicated(parameter_centers[c("Molecule", "Parameter")]) > 0L) {
+  stop("The truth-model parameter-center table is incomplete or duplicated.")
+}
+
+model_manifest <- tibble(
+  Molecule = MOLECULES,
+  Truth_model_role = unname(TRUTH_MODEL_ROLES[MOLECULES]),
+  Source_scenario = unname(SOURCE_SCENARIOS[MOLECULES]),
+  Compiled_model_file = unname(MODEL_FILES[MOLECULES]),
+  Editable_model_file = c(
+    NA_character_,
+    "PK-Sim_Mobi_Files_Monkey/AntiPD1_Nivo_Calibrated.mbp3"
+  )
+) |>
+  left_join(dose_inputs, by = "Molecule") |>
+  left_join(
+    parameter_centers |>
+      filter(.data$Parameter == "Kd (FcRn)") |>
+      select(
+        .data$Molecule,
+        FcRn_Kd_original = .data$Original_configured_value_display,
+        FcRn_Kd_truth_center = .data$Truth_center_value_display,
+        FcRn_Kd_unit = .data$Display_unit,
+        .data$Truth_override_applied
+      ),
+    by = "Molecule"
+  ) |>
+  mutate(
+    Uncalibrated_nivolumab_simulated = FALSE,
+    Nivolumab_calibration_note = if_else(
+      .data$Molecule == "Nivolumab",
+      paste(
+        "Same Anti-PD1 structure; FcRn Kd changed to",
+        NIVOLUMAB_FCRN_KD_UMOL_L, "micromol/L"
+      ),
+      NA_character_
+    )
+  )
+
+model_manifest |>
+  select(
+    .data$Molecule,
+    .data$Truth_model_role,
+    .data$Source_scenario,
+    .data$FcRn_Kd_original,
+    .data$FcRn_Kd_truth_center,
+    .data$FcRn_Kd_unit
+  ) |>
+  kable(
+    digits = 4,
+    caption = "Truth-model templates and FcRn-Kd centers"
+  )
+```
+
+# Step 2 Read molecular weights
+
+The molecular weights are retained for the concentration conversion that will
+be performed in Step 2. Concentrations returned by the models are in
+micromol/L; multiplying by molecular weight and dividing by 1000 converts them
+to microgram/mL.
+
+```{r}
+#| label: molecular-weights
+
+mw_lookup <- read_csv(
+  MONKEY_DATA_FILE,
+  show_col_types = FALSE,
+  locale = locale(encoding = "UTF-8")
+) |>
+  transmute(
+    Molecule = as.character(.data$Molecule),
+    MW_g_mol = as.numeric(.data$Molecular.Weight)
+  ) |>
+  filter(.data$Molecule %in% MOLECULES) |>
+  group_by(.data$Molecule) |>
+  summarise(
+    Unique_positive_values = n_distinct(.data$MW_g_mol[
+      is.finite(.data$MW_g_mol) & .data$MW_g_mol > 0
+    ]),
+    MW_g_mol = median(.data$MW_g_mol, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+if (!setequal(mw_lookup$Molecule, MOLECULES) ||
+    any(mw_lookup$Unique_positive_values != 1L) ||
+    any(!is.finite(mw_lookup$MW_g_mol)) ||
+    any(mw_lookup$MW_g_mol <= 0)) {
+  stop("A unique positive molecular weight was not found for each molecule.")
+}
+
+mw_lookup |>
+  select(-.data$Unique_positive_values) |>
+  kable(digits = 1, caption = "Molecular weights for Step 2")
+```
+
+# Step 3 Generate the monkey populations
+
+The `Monkey` row in `Populations.xlsx` supplies the monkey physiology and the
+configured 3--7 kg body-weight range. Its number of individuals is overridden
+in memory to 50; the workbook is not modified. PK-Sim animal
+population generation samples body weight and linearly scales the average
+monkey physiology. The same body-weight population is reused for both
+molecules, both variability levels, every replicate, and every dose.
+
+Target reference concentration is added as genuine between-monkey variability.
+For each molecule and variability level, 50 lognormal values are drawn around
+the truth-model target center and normalized to retain that exact arithmetic
+mean. The 30% and 60% scenarios therefore apply both to the five shared
+parameter-uncertainty distributions and to the corresponding between-monkey
+target distribution, but target concentration is represented at only one
+hierarchical level.
+
+Endogenous IgG is not varied. FcRn abundance or function is also not varied
+between monkeys. Uno, Utoh, and Iwasaki analyzed FCGRT and B2M in 71
+cynomolgus and 24 rhesus macaques. None of the nonsynonymous variants changed
+residues known to be important for FcRn function, and the authors concluded
+that substantial inter-animal FcRn variability was not expected in the
+cynomolgus macaques analyzed [Uno et al., 2014,
+doi:10.2133/dmpk.DMPK-14-NT-033](https://doi.org/10.2133/dmpk.DMPK-14-NT-033).
+
+```{r}
+#| label: create-monkey-population
+
+population_characteristics <- readPopulationCharacteristicsFromXLS(
+  XLSpath = POPULATION_CONFIG_FILE,
+  populationName = POPULATION_NAME,
+  sheet = "Demographics"
+)
+
+configured_population_size <- population_characteristics$numberOfIndividuals
+if (!is.finite(configured_population_size) || configured_population_size < 1L) {
+  stop("Populations.xlsx does not define a valid Monkey population size.")
+}
+
+population_characteristics$numberOfIndividuals <- N_POPULATION_ANIMALS
+population_characteristics$seed <- POPULATION_SEED
+population_result <- createPopulation(
+  populationCharacteristics = population_characteristics
+)
+base_population <- population_result$population
+base_population_table <- populationToDataFrame(base_population)
+
+if (base_population$count != N_POPULATION_ANIMALS ||
+    nrow(base_population_table) != N_POPULATION_ANIMALS ||
+    n_distinct(base_population_table$IndividualId) != N_POPULATION_ANIMALS) {
+  stop(
+    "The generated monkey population does not contain ",
+    N_POPULATION_ANIMALS, " unique animals."
+  )
+}
+
+weight_column <- grep(
+  "^Organism\\|Weight( \\[kg\\])?$",
+  names(base_population_table),
+  value = TRUE
+)
+if (length(weight_column) != 1L) {
+  stop("The generated population must contain one organism-weight column.")
+}
+if (any(!is.finite(base_population_table[[weight_column]])) ||
+    any(base_population_table[[weight_column]] <= 0)) {
+  stop("Every generated monkey must have a positive finite body weight.")
+}
+if (population_result$seed != POPULATION_SEED) {
+  stop("The population generator did not retain the requested seed.")
+}
+
+write_csv(base_population_table, BASE_POPULATION_FILE)
+
+population_summary <- tibble(
+  Population = POPULATION_NAME,
+  Configured_animals_in_workbook = configured_population_size,
+  Animals = base_population$count,
+  Population_size_override_applied =
+    configured_population_size != N_POPULATION_ANIMALS,
+  Seed_requested = POPULATION_SEED,
+  Seed_used = population_result$seed,
+  Weight_min_kg = min(base_population_table[[weight_column]]),
+  Weight_median_kg = median(base_population_table[[weight_column]]),
+  Weight_max_kg = max(base_population_table[[weight_column]])
+)
+
+population_summary |>
+  kable(
+    digits = 3,
+    caption = "Fixed body-weight population"
+  )
+
+target_centers <- parameter_centers |>
+  filter(.data$Parameter == "Target reference concentration") |>
+  select(
+    .data$Molecule,
+    Target_center_internal = .data$Truth_center_value_internal,
+    Target_center_display = .data$Truth_center_value_display,
+    Target_display_unit = .data$Display_unit
+  )
+
+if (nrow(target_centers) != length(MOLECULES) ||
+    anyDuplicated(target_centers$Molecule) > 0L) {
+  stop("A unique target-reference-concentration center is required per molecule.")
+}
+
+target_population_cells <- expand_grid(
+  Molecule = MOLECULES,
+  Variability_CV = VARIABILITY_CV
+) |>
+  left_join(target_centers, by = "Molecule") |>
+  mutate(
+    Molecule_index = match(.data$Molecule, MOLECULES),
+    Variability_index = match(.data$Variability_CV, VARIABILITY_CV),
+    Target_population_seed = TARGET_POPULATION_SEED_BASE +
+      100L * (.data$Molecule_index - 1L) +
+      .data$Variability_index
+  )
+
+generate_target_population <- function(cells) {
+  pmap_dfr(
+    cells |>
+      select(
+        .data$Molecule,
+        .data$Variability_CV,
+        .data$Target_center_internal,
+        .data$Target_center_display,
+        .data$Target_display_unit,
+        .data$Target_population_seed
+      ),
+    function(
+      Molecule,
+      Variability_CV,
+      Target_center_internal,
+      Target_center_display,
+      Target_display_unit,
+      Target_population_seed
+    ) {
+      set.seed(Target_population_seed)
+      raw_values <- draw_lognormal_mean_cv(
+        n = N_POPULATION_ANIMALS,
+        arithmetic_mean = Target_center_internal,
+        cv = Variability_CV
+      )
+      target_internal <- raw_values *
+        Target_center_internal / mean(raw_values)
+      tibble(
+        Molecule = Molecule,
+        Variability_CV = Variability_CV,
+        PopulationIndividualId = base_population_table$IndividualId,
+        Monkey_index = seq_len(N_POPULATION_ANIMALS),
+        BodyWeight_kg = as.numeric(base_population_table[[weight_column]]),
+        Target_population_seed = Target_population_seed,
+        Target_center_internal = Target_center_internal,
+        Target_center_display = Target_center_display,
+        Target_display_unit = Target_display_unit,
+        Target_reference_concentration_internal = target_internal,
+        Target_reference_concentration_display = target_internal *
+          Target_center_display / Target_center_internal
+      )
+    }
+  ) |>
+    arrange(
+      factor(.data$Molecule, levels = MOLECULES),
+      .data$Variability_CV,
+      .data$Monkey_index
+    )
+}
+
+target_population <- generate_target_population(target_population_cells)
+target_population_recheck <- generate_target_population(target_population_cells)
+if (!identical(target_population, target_population_recheck)) {
+  stop("Target population values were not reproduced from their recorded seeds.")
+}
+rm(target_population_recheck)
+
+expected_target_rows <- length(MOLECULES) * length(VARIABILITY_CV) *
+  N_POPULATION_ANIMALS
+if (nrow(target_population) != expected_target_rows ||
+    any(!is.finite(target_population$Target_reference_concentration_internal)) ||
+    any(target_population$Target_reference_concentration_internal <= 0) ||
+    anyDuplicated(
+      target_population[c(
+        "Molecule", "Variability_CV", "PopulationIndividualId"
+      )]
+    ) > 0L) {
+  stop("The molecule-specific target population is incomplete or invalid.")
+}
+
+target_population_diagnostics <- target_population |>
+  group_by(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Target_center_display,
+    .data$Target_display_unit,
+    .data$Target_population_seed
+  ) |>
+  summarise(
+    Monkeys = n(),
+    Target_mean_display = mean(
+      .data$Target_reference_concentration_display
+    ),
+    Realized_target_CV = sd(
+      .data$Target_reference_concentration_display
+    ) / mean(.data$Target_reference_concentration_display),
+    Target_minimum_display = min(
+      .data$Target_reference_concentration_display
+    ),
+    Target_maximum_display = max(
+      .data$Target_reference_concentration_display
+    ),
+    .groups = "drop"
+  ) |>
+  mutate(
+    Mean_to_truth_center_ratio = .data$Target_mean_display /
+      .data$Target_center_display
+  )
+
+if (any(abs(
+  target_population_diagnostics$Mean_to_truth_center_ratio - 1
+) > 1e-12)) {
+  stop("A target population was not normalized to its truth-model mean.")
+}
+
+write_csv(target_population, TARGET_POPULATION_FILE)
+
+target_population_diagnostics |>
+  mutate(
+    `Specified CV (%)` = 100 * .data$Variability_CV,
+    `Realized CV (%)` = 100 * .data$Realized_target_CV
+  ) |>
+  select(
+    .data$Molecule,
+    `Specified CV (%)`,
+    `Realized CV (%)`,
+    .data$Monkeys,
+    .data$Target_mean_display,
+    .data$Target_display_unit,
+    .data$Mean_to_truth_center_ratio
+  ) |>
+  kable(
+    digits = 4,
+    caption = "Between-monkey target-reference-concentration populations"
+  )
+```
+
+# Step 4 Draw the replicate-level molecule parameters
+
+Each of the five positive shared inputs is drawn independently from a lognormal distribution. The
+log-scale mean is adjusted so that the arithmetic mean equals the applicable
+truth-model center. Separate deterministic seeds are assigned to every
+molecule-by-variability-by-parameter cell, making the draws reproducible even
+if reporting code is reordered later.
+
+```{r}
+#| label: draw-replicate-parameters
+
+parameter_draw_cells <- expand_grid(
+  Molecule = MOLECULES,
+  Variability_CV = VARIABILITY_CV,
+  Parameter = names(PARAMETER_PATHS)
+) |>
+  left_join(
+    parameter_centers |>
+      select(
+        .data$Molecule,
+        .data$Parameter,
+        Typical_value_internal = .data$Truth_center_value_internal,
+        Typical_value_display = .data$Truth_center_value_display,
+        .data$Display_unit
+      ),
+    by = c("Molecule", "Parameter")
+  ) |>
+  mutate(
+    Molecule_index = match(.data$Molecule, MOLECULES),
+    Variability_index = match(.data$Variability_CV, VARIABILITY_CV),
+    Parameter_index = match(.data$Parameter, names(PARAMETER_PATHS)),
+    Draw_seed = PARAMETER_DRAW_SEED_BASE +
+      1000L * (.data$Molecule_index - 1L) +
+      100L * (.data$Variability_index - 1L) +
+      .data$Parameter_index
+  )
+
+generate_parameter_draws <- function(draw_cells) {
+  pmap_dfr(
+    draw_cells |>
+      select(
+        .data$Molecule,
+        .data$Variability_CV,
+        .data$Parameter,
+        .data$Typical_value_internal,
+        .data$Typical_value_display,
+        .data$Display_unit,
+        .data$Draw_seed
+      ),
+    function(
+      Molecule,
+      Variability_CV,
+      Parameter,
+      Typical_value_internal,
+      Typical_value_display,
+      Display_unit,
+      Draw_seed
+    ) {
+      set.seed(Draw_seed)
+      draw_internal <- draw_lognormal_mean_cv(
+        n = N_REPLICATES,
+        arithmetic_mean = Typical_value_internal,
+        cv = Variability_CV
+      )
+      tibble(
+        Molecule = Molecule,
+        Variability_CV = Variability_CV,
+        Replicate = seq_len(N_REPLICATES),
+        Parameter = Parameter,
+        Typical_value_internal = Typical_value_internal,
+        Typical_value_display = Typical_value_display,
+        Display_unit = Display_unit,
+        Draw_seed = Draw_seed,
+        Parameter_value_internal = draw_internal,
+        Parameter_value_display = draw_internal *
+          Typical_value_display / Typical_value_internal
+      )
+    }
+  ) |>
+    arrange(
+      factor(.data$Molecule, levels = MOLECULES),
+      .data$Variability_CV,
+      .data$Replicate,
+      factor(.data$Parameter, levels = names(PARAMETER_PATHS))
+    )
+}
+
+parameter_draws_long <- generate_parameter_draws(parameter_draw_cells)
+parameter_draws_recheck <- generate_parameter_draws(parameter_draw_cells)
+
+if (!identical(parameter_draws_long, parameter_draws_recheck)) {
+  stop("Parameter draws were not reproduced exactly from their recorded seeds.")
+}
+rm(parameter_draws_recheck)
+
+expected_draw_rows <- length(MOLECULES) * length(VARIABILITY_CV) *
+  N_REPLICATES * length(PARAMETER_PATHS)
+if (nrow(parameter_draws_long) != expected_draw_rows ||
+    any(!is.finite(parameter_draws_long$Parameter_value_internal)) ||
+    any(parameter_draws_long$Parameter_value_internal <= 0) ||
+    any(!is.finite(parameter_draws_long$Parameter_value_display)) ||
+    any(parameter_draws_long$Parameter_value_display <= 0)) {
+  stop("The parameter-draw table has an invalid count or value.")
+}
+
+draw_group_counts <- parameter_draws_long |>
+  count(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Parameter,
+    name = "Draws"
+  )
+if (any(draw_group_counts$Draws != N_REPLICATES)) {
+  stop("A molecule-by-variability-by-parameter cell is incomplete.")
+}
+
+parameter_draws <- parameter_draws_long |>
+  select(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Replicate,
+    .data$Parameter,
+    .data$Parameter_value_internal
+  ) |>
+  pivot_wider(
+    names_from = .data$Parameter,
+    values_from = .data$Parameter_value_internal
+  ) |>
+  arrange(
+    factor(.data$Molecule, levels = MOLECULES),
+    .data$Variability_CV,
+    .data$Replicate
+  )
+
+if (nrow(parameter_draws) !=
+    length(MOLECULES) * length(VARIABILITY_CV) * N_REPLICATES ||
+    anyDuplicated(
+      parameter_draws[c("Molecule", "Variability_CV", "Replicate")]
+    ) > 0L) {
+  stop("The wide replicate parameter table is incomplete or duplicated.")
+}
+
+draw_diagnostics <- parameter_draws_long |>
+  group_by(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Parameter,
+    .data$Typical_value_display,
+    .data$Display_unit,
+    .data$Draw_seed
+  ) |>
+  summarise(
+    Draws = n(),
+    Draw_mean_display = mean(.data$Parameter_value_display),
+    Realized_CV = sd(.data$Parameter_value_display) /
+      mean(.data$Parameter_value_display),
+    Minimum_display = min(.data$Parameter_value_display),
+    Maximum_display = max(.data$Parameter_value_display),
+    .groups = "drop"
+  ) |>
+  mutate(
+    Mean_to_truth_center_ratio = .data$Draw_mean_display /
+      .data$Typical_value_display
+  )
+
+write_csv(parameter_draws_long, PARAMETER_DRAW_FILE)
+
+draw_diagnostics |>
+  mutate(
+    `Variability CV (%)` = 100 * .data$Variability_CV,
+    across(
+      c(
+        .data$Typical_value_display,
+        .data$Draw_mean_display,
+        .data$Realized_CV,
+        .data$Mean_to_truth_center_ratio,
+        .data$Minimum_display,
+        .data$Maximum_display
+      ),
+      ~ signif(.x, 4)
+    )
+  ) |>
+  select(
+    .data$Molecule,
+    `Variability CV (%)`,
+    .data$Parameter,
+    .data$Typical_value_display,
+    .data$Display_unit,
+    .data$Draw_mean_display,
+    .data$Realized_CV,
+    .data$Mean_to_truth_center_ratio,
+    .data$Minimum_display,
+    .data$Maximum_display
+  ) |>
+  kable(caption = "Realized replicate-level parameter distributions")
+```
+
+```{r}
+#| label: parameter-draw-plot
+#| fig-width: 12
+#| fig-height: 8
+
+parameter_draw_plot_data <- parameter_draws_long |>
+  mutate(
+    Ratio_to_truth_center = .data$Parameter_value_display /
+      .data$Typical_value_display,
+    Variability = factor(
+      paste0(100 * .data$Variability_CV, "% CV"),
+      levels = paste0(100 * VARIABILITY_CV, "% CV")
+    ),
+    Parameter = factor(
+      .data$Parameter,
+      levels = names(PARAMETER_PATHS)
+    )
+  )
+
+ggplot(
+  parameter_draw_plot_data,
+  aes(x = .data$Ratio_to_truth_center, fill = .data$Variability)
+) +
+  geom_histogram(
+    bins = 24,
+    alpha = 0.58,
+    position = "identity",
+    color = "white",
+    linewidth = 0.2
+  ) +
+  geom_vline(xintercept = 1, color = "grey25", linewidth = 0.65) +
+  facet_grid(rows = vars(.data$Molecule), cols = vars(.data$Parameter)) +
+  scale_fill_manual(values = c("30% CV" = "#2596A6", "60% CV" = "#6554A4")) +
+  scale_x_continuous(labels = label_number(accuracy = 0.1)) +
+  labs(
+    x = "Draw divided by truth-model center",
+    y = "Replicate count",
+    fill = "Input variability",
+    title = "Replicate-level molecule parameter draws"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+# Step 5 Define designs and time grids
+
+The three-dose design uses 0.1, 1, and 10 mg/kg. The fixed sparse schedule is
+the one used in the prior workflow. Every sparse time is required to be an
+exact member of the dense analysis grid.
+
+```{r}
+#| label: design-and-time-manifests
+
+design_manifest <- map_dfr(names(DESIGN_DOSES), function(design) {
+  doses <- DESIGN_DOSES[[design]]
+  tibble(
+    Design = design,
+    Dose_groups = length(doses),
+    Doses_mg_kg = paste(doses, collapse = ", "),
+    N_per_group = ANIMALS_PER_GROUP,
+    Total_animals = length(doses) * ANIMALS_PER_GROUP,
+    Distinct_within_dose_group = TRUE,
+    Reuse_across_dose_groups_allowed = TRUE
+  )
+}) |>
+  arrange(.data$Dose_groups, .data$N_per_group)
+
+if (!setequal(sort(unique(unlist(DESIGN_DOSES))), DOSES_MG_KG)) {
+  stop("The candidate designs do not span the required dose grid.")
+}
+if (any(ANIMALS_PER_GROUP > N_POPULATION_ANIMALS)) {
+  stop("A requested dose-group sample exceeds the virtual population.")
+}
+if (!all(SPARSE_TIME_H %in% DENSE_TIME_H)) {
+  stop("At least one sparse sampling time is absent from the dense grid.")
+}
+if (max(DENSE_TIME_H) != AUC_END_H || max(SPARSE_TIME_H) != AUC_END_H) {
+  stop("The dense and sparse grids must both extend through day 28.")
+}
+
+time_manifest <- bind_rows(
+  tibble(
+    Grid = "Dense analysis grid",
+    Time_h = DENSE_TIME_H,
+    Time_day = DENSE_TIME_H / 24
+  ),
+  tibble(
+    Grid = "Sparse sampling grid",
+    Time_h = SPARSE_TIME_H,
+    Time_day = SPARSE_TIME_H / 24
+  )
+)
+
+design_manifest |>
+  kable(caption = "Candidate parallel-group monkey study designs")
+
+time_manifest |>
+  count(.data$Grid, name = "Time_points") |>
+  left_join(
+    time_manifest |>
+      group_by(.data$Grid) |>
+      summarise(
+        First_time_h = min(.data$Time_h),
+        Last_time_h = max(.data$Time_h),
+        .groups = "drop"
+      ),
+    by = "Grid"
+  ) |>
+  kable(caption = "Dense and sparse analysis grids")
+```
+
+# Step 6 Prepare profile and batch manifests
+
+The profile index records every replicate-specific physiology combination that
+Step 2 must simulate. Each batch contains 10 replicate parameter sets crossed
+with all 50 monkeys, or 500 profiles per molecule, variability level, and dose.
+
+```{r}
+#| label: profile-and-batch-manifests
+
+monkey_ids <- sort(unique(base_population_table$IndividualId))
+
+crossed_profile_index <- expand_grid(
+  Molecule = MOLECULES,
+  Variability_CV = VARIABILITY_CV,
+  Replicate = seq_len(N_REPLICATES),
+  PopulationIndividualId = monkey_ids
+) |>
+  left_join(
+    target_population |>
+      select(
+        .data$Molecule,
+        .data$Variability_CV,
+        .data$PopulationIndividualId,
+        .data$Monkey_index,
+        .data$BodyWeight_kg,
+        .data$Target_reference_concentration_internal,
+        .data$Target_reference_concentration_display,
+        .data$Target_display_unit
+      ),
+    by = c("Molecule", "Variability_CV", "PopulationIndividualId")
+  ) |>
+  group_by(.data$Molecule, .data$Variability_CV) |>
+  arrange(
+    .data$Replicate,
+    .data$PopulationIndividualId,
+    .by_group = TRUE
+  ) |>
+  mutate(
+    BatchId = ceiling(.data$Replicate / N_REPLICATES_PER_BATCH),
+    Replicate_within_batch = (.data$Replicate - 1L) %%
+      N_REPLICATES_PER_BATCH + 1L,
+    SimulationIndividualIdWithinBatch =
+      (.data$Replicate_within_batch - 1L) * N_POPULATION_ANIMALS +
+      .data$Monkey_index - 1L,
+    TruthProfileId = paste(
+      .data$Molecule,
+      paste0("cv", round(100 * .data$Variability_CV)),
+      paste0("rep", sprintf("%03d", .data$Replicate)),
+      paste0("monkey", sprintf("%02d", .data$Monkey_index)),
+      sep = "_"
+    )
+  ) |>
+  ungroup() |>
+  mutate(CrossedPopulationRowId = row_number(), .before = 1)
+
+expected_crossed_rows <- length(MOLECULES) * length(VARIABILITY_CV) *
+  N_REPLICATES * N_POPULATION_ANIMALS
+if (nrow(crossed_profile_index) != expected_crossed_rows ||
+    anyDuplicated(crossed_profile_index$TruthProfileId) > 0L ||
+    any(!is.finite(
+      crossed_profile_index$Target_reference_concentration_internal
+    )) ||
+    any(crossed_profile_index$Target_reference_concentration_internal <= 0) ||
+    any(!is.finite(crossed_profile_index$BodyWeight_kg)) ||
+    any(crossed_profile_index$BodyWeight_kg <= 0)) {
+  stop("The crossed profile index is incomplete or contains duplicate IDs.")
+}
+
+profile_cell_counts <- crossed_profile_index |>
+  count(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Replicate,
+    name = "Animals"
+  )
+if (any(profile_cell_counts$Animals != N_POPULATION_ANIMALS)) {
+  stop(
+    "A replicate does not contain all ",
+    N_POPULATION_ANIMALS, " physiological monkeys."
+  )
+}
+
+simulation_manifest <- expand_grid(
+  Molecule = MOLECULES,
+  Variability_CV = VARIABILITY_CV,
+  Replicate = seq_len(N_REPLICATES),
+  Dose_mg_kg = DOSES_MG_KG
+) |>
+  mutate(
+    BatchId = ceiling(.data$Replicate / N_REPLICATES_PER_BATCH),
+    Source_scenario = unname(SOURCE_SCENARIOS[.data$Molecule]),
+    Expected_animals = N_POPULATION_ANIMALS,
+    Expected_dense_time_points_per_animal = length(DENSE_TIME_H),
+    Simulation_key = paste(
+      .data$Molecule,
+      paste0("cv", round(100 * .data$Variability_CV)),
+      paste0("rep", sprintf("%03d", .data$Replicate)),
+      paste0("dose", gsub("\\.", "p", .data$Dose_mg_kg)),
+      sep = "_"
+    )
+  )
+
+if (nrow(simulation_manifest) !=
+    length(MOLECULES) * length(VARIABILITY_CV) *
+      N_REPLICATES * length(DOSES_MG_KG) ||
+    anyDuplicated(simulation_manifest$Simulation_key) > 0L) {
+  stop("The simulation manifest is incomplete or contains duplicate keys.")
+}
+
+batch_manifest <- simulation_manifest |>
+  group_by(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$BatchId,
+    .data$Dose_mg_kg,
+    .data$Source_scenario
+  ) |>
+  summarise(
+    First_replicate = min(.data$Replicate),
+    Last_replicate = max(.data$Replicate),
+    Replicates = n(),
+    Expected_profiles = n() * N_POPULATION_ANIMALS,
+    Expected_dense_rows = n() * N_POPULATION_ANIMALS * length(DENSE_TIME_H),
+    .groups = "drop"
+  ) |>
+  mutate(
+    Checkpoint_key = paste(
+      tolower(.data$Molecule),
+      paste0("cv", round(100 * .data$Variability_CV)),
+      paste0("dose", gsub("\\.", "p", .data$Dose_mg_kg)),
+      paste0("batch", sprintf("%03d", .data$BatchId)),
+      sep = "_"
+    )
+  )
+
+if (any(batch_manifest$Replicates != N_REPLICATES_PER_BATCH) ||
+    any(batch_manifest$Expected_profiles !=
+        N_REPLICATES_PER_BATCH * N_POPULATION_ANIMALS) ||
+    anyDuplicated(batch_manifest$Checkpoint_key) > 0L) {
+  stop("The Step 2 batch manifest is invalid.")
+}
+
+batch_manifest |>
+  count(
+    .data$Molecule,
+    .data$Variability_CV,
+    name = "Dose_batches"
+  ) |>
+  mutate(`Variability CV (%)` = 100 * .data$Variability_CV) |>
+  select(.data$Molecule, `Variability CV (%)`, .data$Dose_batches) |>
+  kable(caption = "Planned Step 2 checkpoint batches")
+```
+
+# Step 7 Save the reviewed Step 1 input record
+
+The saved R object is the sole consolidated input to Step 2. It contains plain
+tables and settings rather than live simulation objects, so it can be loaded
+and validated independently in a later R session.
+
+```{r}
+#| label: save-step1-record
+
+settings <- list(
+  workflow_stage = "Step 1: prepare inputs",
+  review_required_before_step2 = TRUE,
+  molecules = MOLECULES,
+  source_scenarios = SOURCE_SCENARIOS,
+  source_doses_mg_kg = SOURCE_DOSES_MG_KG,
+  model_files = MODEL_FILES,
+  doses_mg_kg = DOSES_MG_KG,
+  variability_cv = VARIABILITY_CV,
+  n_replicates = N_REPLICATES,
+  n_population_animals = N_POPULATION_ANIMALS,
+  n_replicates_per_batch = N_REPLICATES_PER_BATCH,
+  population_name = POPULATION_NAME,
+  population_seed_requested = POPULATION_SEED,
+  population_seed_used = population_result$seed,
+  parameter_draw_seed_base = PARAMETER_DRAW_SEED_BASE,
+  target_population_seed_base = TARGET_POPULATION_SEED_BASE,
+  nivolumab_fcrn_kd_umol_l = NIVOLUMAB_FCRN_KD_UMOL_L,
+  dense_time_h = DENSE_TIME_H,
+  sparse_time_h = SPARSE_TIME_H,
+  auc_end_h = AUC_END_H,
+  animals_per_group = ANIMALS_PER_GROUP,
+  design_doses = DESIGN_DOSES,
+  parameter_paths = PARAMETER_PATHS,
+  target_reference_path = TARGET_REFERENCE_PATH,
+  weight_path = WEIGHT_PATH,
+  parameter_uncertainty_hierarchy = "shared across monkeys within replicate",
+  target_reference_hierarchy = "between-monkey variability only",
+  target_reference_cv = VARIABILITY_CV,
+  body_weight_variable_across_monkeys = TRUE,
+  endogenous_igg_variable_across_monkeys = FALSE,
+  fcrn_variable_across_monkeys = FALSE,
+  fcrn_population_rationale = paste(
+    "The authors concluded that substantial inter-animal FcRn variability",
+    "was not expected in the cynomolgus macaques analyzed (Uno et al. 2014;",
+    "doi:10.2133/dmpk.DMPK-14-NT-033)."
+  ),
+  dose_path = DOSE_PATH,
+  plasma_output_path = MAB_PLASMA_OUTPUT_PATH,
+  calibrated_nivolumab_project_file = CALIBRATED_NIVOLUMAB_PROJECT_FILE,
+  uncalibrated_nivolumab_simulated = FALSE
+)
+
+step1_record <- list(
+  settings = settings,
+  software_versions = package_record,
+  model_manifest = model_manifest,
+  molecular_weights = mw_lookup |>
+    select(-.data$Unique_positive_values),
+  parameter_centers = parameter_centers,
+  parameter_draws_long = parameter_draws_long,
+  parameter_draws = parameter_draws,
+  parameter_draw_diagnostics = draw_diagnostics,
+  base_population = base_population_table,
+  population_summary = population_summary,
+  target_population = target_population,
+  target_population_diagnostics = target_population_diagnostics,
+  crossed_profile_index = crossed_profile_index,
+  design_manifest = design_manifest,
+  time_manifest = time_manifest,
+  simulation_manifest = simulation_manifest,
+  batch_manifest = batch_manifest
+)
+
+saveRDS(step1_record, STEP1_RDS, compress = "xz")
+
+settings_table <- tribble(
+  ~Setting, ~Value,
+  "Workflow stage", settings$workflow_stage,
+  "Review required before Step 2", "TRUE",
+  "Truth molecules", paste(MOLECULES, collapse = ", "),
+  "Uncalibrated Nivolumab simulations", "None",
+  "Nivolumab FcRn-Kd truth center (micromol/L)",
+    as.character(NIVOLUMAB_FCRN_KD_UMOL_L),
+  "Variability CV (%)", paste(100 * VARIABILITY_CV, collapse = ", "),
+  "Replicates per molecule and CV", as.character(N_REPLICATES),
+  "Physiological monkeys per replicate", as.character(N_POPULATION_ANIMALS),
+  "Replicates per Step 2 batch", as.character(N_REPLICATES_PER_BATCH),
+  "Shared uncertain parameters per replicate",
+    as.character(length(PARAMETER_PATHS)),
+  "Between-monkey variable model inputs",
+    "Body weight; target reference concentration",
+  "Target reference concentration CV (%)",
+    paste(100 * VARIABILITY_CV, collapse = ", "),
+  "Endogenous IgG variable across monkeys", "FALSE",
+  "FcRn variable across monkeys", "FALSE",
+  "Dose grid (mg/kg)", paste(DOSES_MG_KG, collapse = ", "),
+  "Dense analysis time points", as.character(length(DENSE_TIME_H)),
+  "Sparse sampling time points", as.character(length(SPARSE_TIME_H)),
+  "Parameter-draw seed base", as.character(PARAMETER_DRAW_SEED_BASE),
+  "Population seed", as.character(population_result$seed),
+  "Crossed truth profiles before dose expansion",
+    as.character(nrow(crossed_profile_index)),
+  "Planned molecule-CV-replicate-dose cells",
+    as.character(nrow(simulation_manifest)),
+  "Planned checkpoint batches", as.character(nrow(batch_manifest))
+)
+artifact_paths <- c(
+  STEP1_RDS,
+  BASE_POPULATION_FILE,
+  TARGET_POPULATION_FILE,
+  PARAMETER_DRAW_FILE
+)
+assert_files_exist(artifact_paths, "Generated Step 1 artifact")
+
+artifact_manifest <- tibble(
+  Artifact = basename(artifact_paths),
+  Path = normalizePath(artifact_paths, winslash = "/", mustWork = TRUE),
+  Bytes = file.info(artifact_paths)$size,
+  MD5 = unname(tools::md5sum(artifact_paths))
+)
+loaded_record <- readRDS(STEP1_RDS)
+if (!identical(loaded_record$parameter_draws_long, parameter_draws_long) ||
+    !identical(loaded_record$base_population, base_population_table) ||
+    !identical(loaded_record$target_population, target_population) ||
+    !identical(loaded_record$batch_manifest, batch_manifest)) {
+  stop("The saved Step 1 R object failed its round-trip validation.")
+}
+
+settings_table |>
+  kable(caption = "Step 1 settings for review")
+
+artifact_manifest |>
+  select(.data$Artifact, .data$Bytes, .data$MD5) |>
+  kable(caption = "Step 1 artifacts and checksums")
+```
+
+# Review checklist
+
+Before authorizing Step 2, confirm that:
+
+1. only the nominal Golimumab truth and calibrated Nivolumab truth are listed;
+2. the Nivolumab FcRn-Kd truth center is 0.39 micromol/L;
+3. each molecule has 100 replicates at 30% CV and 100 at 60% CV;
+4. every replicate has all five positive shared uncertain inputs;
+5. the physiological population contains 50 unique monkeys, with body
+   weight and target reference concentration as the only between-monkey inputs;
+6. the three-dose design is 0.1, 1, and 10 mg/kg;
+7. the sparse grid contains the 12 agreed times through day 28;
+8. each batch contains 10 replicate draws and 500 profiles before dose
+   expansion;
+9. no concentration-time simulation has been run by this script; and
+10. the saved tables and consolidated R object have the expected checksums.
+
+## R session information
+
+```{r}
+#| label: session-info
+
+sessionInfo()
+```

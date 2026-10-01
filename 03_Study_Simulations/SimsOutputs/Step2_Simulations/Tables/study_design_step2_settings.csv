@@ -1,0 +1,10 @@
+Setting,Value
+Step 1 input MD5,b5cac00695e6599a49ae135dd3f5124b
+Force rerun,FALSE
+Molecules,"Golimumab, Nivolumab"
+Replicates per molecule and CV,100
+Monkeys per replicate,50
+Replicates per checkpoint batch,10
+Dense time points per profile,696
+Nominal typical-subject reference,one dense profile per molecule and dose
+Checkpoint batches,200

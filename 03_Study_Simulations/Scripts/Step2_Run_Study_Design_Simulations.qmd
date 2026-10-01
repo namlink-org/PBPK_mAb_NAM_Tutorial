@@ -1,0 +1,1195 @@
+---
+title: "Step 2: Run replicate-matched monkey study-design simulations"
+author: NAMLink
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: true
+prefer-html: true
+---
+
+# Purpose and execution contract
+
+This script loads the reviewed Step 1 record and runs only the two agreed truth
+models: nominal Golimumab and calibrated Nivolumab. The full analysis contains
+100 parameter-draw replicates and 50 virtual monkeys per variability level.
+Every replicate-specific parameter vector is crossed with the same 50-monkey
+population, and each monkey receives its molecule- and variability-specific
+target reference concentration from Step 1.
+
+A separate dense nominal typical-subject profile is also simulated for every
+molecule and dose using the configured model physiology and central parameter
+values. Step 3 uses this secondary reference without replacing the
+replicate-matched population truth used for the primary design analysis.
+
+Each molecule-by-CV-by-dose batch is written to an independent checkpoint as
+soon as it has passed validation. Rerendering resumes from valid checkpoints.
+Set the environment variable `STUDY_DESIGN_FORCE_RERUN=true` only when all
+checkpoints should be recomputed deliberately.
+
+```{r}
+#| label: setup
+
+rm(list = ls())
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(esqlabsR)
+  library(knitr)
+  library(ospsuite)
+  library(purrr)
+  library(readr)
+  library(tibble)
+  library(tidyr)
+})
+
+find_project_root <- function(start = getwd()) {
+  current <- normalizePath(start, winslash = "/", mustWork = TRUE)
+  repeat {
+    required <- c(
+      file.path(current, "00_Data"),
+      file.path(current, "01_Models"),
+      file.path(current, "02_APriori_PBPK_Workflow"),
+      file.path(current, "03_Study_Simulations")
+    )
+    if (all(dir.exists(required))) return(current)
+    parent <- dirname(current)
+    if (identical(parent, current)) {
+      stop("Could not locate the PBPK_mAb_NAM_Tutorial project root.")
+    }
+    current <- parent
+  }
+}
+
+assert_files_exist <- function(paths, description = "Required input") {
+  missing <- paths[!file.exists(paths)]
+  if (length(missing) > 0L) {
+    stop(description, " is missing: ", paste(missing, collapse = "; "))
+  }
+  invisible(paths)
+}
+
+atomic_save_rds <- function(object, path) {
+  temporary_path <- tempfile(
+    pattern = "study_design_checkpoint_",
+    tmpdir = dirname(path),
+    fileext = ".rds"
+  )
+  saveRDS(object, temporary_path, compress = "xz")
+  copied <- file.copy(temporary_path, path, overwrite = TRUE)
+  unlink(temporary_path)
+  if (!copied) stop("Could not save checkpoint: ", path)
+  invisible(path)
+}
+
+PROJECT_ROOT <- find_project_root()
+APRIORI_DIR <- file.path(PROJECT_ROOT, "02_APriori_PBPK_Workflow")
+STUDY_DIR <- file.path(PROJECT_ROOT, "03_Study_Simulations")
+STEP1_RDS <- file.path(
+  STUDY_DIR, "SimsOutputs", "Step1_Inputs", "Objects",
+  "study_design_step1_inputs.rds"
+)
+
+OUTPUT_DIR <- file.path(STUDY_DIR, "SimsOutputs", "Step2_Simulations")
+CHECKPOINT_DIR <- file.path(OUTPUT_DIR, "Checkpoints")
+TABLE_DIR <- file.path(OUTPUT_DIR, "Tables")
+OBJECT_DIR <- file.path(OUTPUT_DIR, "Objects")
+walk(
+  c(OUTPUT_DIR, CHECKPOINT_DIR, TABLE_DIR, OBJECT_DIR),
+  dir.create,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+CHECKPOINT_INVENTORY_FILE <- file.path(
+  TABLE_DIR, "study_design_step2_checkpoint_inventory.csv"
+)
+FAILED_PROFILE_FILE <- file.path(
+  TABLE_DIR, "study_design_step2_failed_profiles.csv"
+)
+SETTINGS_FILE <- file.path(
+  TABLE_DIR, "study_design_step2_settings.csv"
+)
+PACKAGE_FILE <- file.path(
+  TABLE_DIR, "study_design_step2_software_versions.csv"
+)
+ARTIFACT_MANIFEST_FILE <- file.path(
+  TABLE_DIR, "study_design_step2_artifact_manifest.csv"
+)
+STEP2_INDEX_RDS <- file.path(
+  OBJECT_DIR, "study_design_step2_run_index.rds"
+)
+NOMINAL_REFERENCE_RDS <- file.path(
+  OBJECT_DIR, "study_design_nominal_typical_dense_profiles.rds"
+)
+
+PROJECT_CONFIG_FILE <- file.path(APRIORI_DIR, "ProjectConfiguration.xlsx")
+FORCE_RERUN <- tolower(Sys.getenv(
+  "STUDY_DESIGN_FORCE_RERUN",
+  unset = "false"
+)) %in% c("true", "1", "yes")
+
+assert_files_exist(
+  c(STEP1_RDS, PROJECT_CONFIG_FILE),
+  "Step 2 input"
+)
+
+step1 <- readRDS(STEP1_RDS)
+settings <- step1$settings
+STEP1_INPUT_MD5 <- unname(tools::md5sum(STEP1_RDS))
+
+required_step1_components <- c(
+  "settings", "model_manifest", "parameter_centers",
+  "parameter_draws", "base_population", "target_population",
+  "crossed_profile_index", "batch_manifest"
+)
+if (!all(required_step1_components %in% names(step1))) {
+  stop("The Step 1 record is incomplete. Rerender Step 1 before Step 2.")
+}
+if (!identical(settings$uncalibrated_nivolumab_simulated, FALSE) ||
+    !is.numeric(settings$n_replicates) || settings$n_replicates < 1L ||
+    !is.numeric(settings$n_population_animals) ||
+      settings$n_population_animals < max(settings$animals_per_group) ||
+    length(settings$parameter_paths) != 5L ||
+    !identical(settings$fcrn_variable_across_monkeys, FALSE) ||
+    !identical(settings$endogenous_igg_variable_across_monkeys, FALSE) ||
+    !identical(settings$weight_path, "Organism|Weight") ||
+    !isTRUE(all.equal(settings$nivolumab_fcrn_kd_umol_l, 0.39))) {
+  stop("The Step 1 record does not match the approved analysis hierarchy.")
+}
+
+package_record <- tibble(
+  Package = c(
+    "R", "dplyr", "esqlabsR", "knitr", "ospsuite",
+    "purrr", "readr", "tibble", "tidyr"
+  ),
+  Version = c(
+    paste(R.version$major, R.version$minor, sep = "."),
+    map_chr(
+      c(
+        "dplyr", "esqlabsR", "knitr", "ospsuite",
+        "purrr", "readr", "tibble", "tidyr"
+      ),
+      ~ as.character(packageVersion(.x))
+    )
+  )
+)
+write_csv(package_record, PACKAGE_FILE)
+
+settings_table <- tribble(
+  ~Setting, ~Value,
+  "Step 1 input MD5", STEP1_INPUT_MD5,
+  "Force rerun", as.character(FORCE_RERUN),
+  "Molecules", paste(settings$molecules, collapse = ", "),
+  "Replicates per molecule and CV", as.character(settings$n_replicates),
+  "Monkeys per replicate", as.character(settings$n_population_animals),
+  "Replicates per checkpoint batch",
+    as.character(settings$n_replicates_per_batch),
+  "Dense time points per profile", as.character(length(settings$dense_time_h)),
+  "Nominal typical-subject reference",
+    "one dense profile per molecule and dose",
+  "Checkpoint batches", as.character(nrow(step1$batch_manifest))
+)
+write_csv(settings_table, SETTINGS_FILE)
+```
+
+# Step 1 Recreate and lock the truth simulations
+
+The simulations are recreated from the same scenario configurations used by
+Step 1. All truth-model centers are applied before population overrides. This
+explicitly restores the calibrated Nivolumab FcRn Kd center of 0.39
+micromol/L; no uncalibrated Nivolumab branch is created.
+
+```{r}
+#| label: create-truth-simulations
+
+project_configuration <- createProjectConfiguration(
+  path = PROJECT_CONFIG_FILE,
+  ignoreVersionCheck = TRUE
+)
+scenario_configurations <- readScenarioConfigurationFromExcel(
+  scenarioNames = unname(settings$source_scenarios),
+  projectConfiguration = project_configuration
+)
+scenarios <- createScenarios(
+  scenarioConfigurations = scenario_configurations
+)
+
+if (!setequal(names(scenarios), unname(settings$source_scenarios))) {
+  stop("The requested truth-model scenarios were not created.")
+}
+
+simulations <- setNames(
+  map(settings$molecules, function(molecule) {
+    scenarios[[unname(settings$source_scenarios[[molecule]])]]$simulation
+  }),
+  settings$molecules
+)
+
+original_outputs <- map(
+  simulations,
+  ~ map_chr(.x$outputSelections$allOutputs, "path")
+)
+
+walk(settings$molecules, function(molecule) {
+  simulation <- simulations[[molecule]]
+  centers <- step1$parameter_centers |>
+    filter(.data$Molecule == molecule)
+
+  setParameterValuesByPath(
+    parameterPaths = centers$Path,
+    values = centers$Truth_center_value_internal,
+    simulation = simulation
+  )
+
+  retained <- getQuantityValuesByPath(
+    quantityPaths = centers$Path,
+    simulation = simulation
+  )
+  if (!isTRUE(all.equal(
+    as.numeric(retained),
+    as.numeric(centers$Truth_center_value_internal),
+    tolerance = 1e-12
+  ))) {
+    stop("Truth-model centers were not retained for ", molecule, ".")
+  }
+
+  clearOutputs(simulation = simulation)
+  addOutputs(
+    quantitiesOrPaths = settings$plasma_output_path,
+    simulation = simulation
+  )
+})
+
+nivo_center <- step1$parameter_centers |>
+  filter(.data$Molecule == "Nivolumab", .data$Parameter == "Kd (FcRn)") |>
+  pull(.data$Truth_center_value_display)
+if (length(nivo_center) != 1L ||
+    !isTRUE(all.equal(nivo_center, 0.39, tolerance = 1e-12))) {
+  stop("The calibrated Nivolumab FcRn-Kd center is not 0.39 micromol/L.")
+}
+
+step1$model_manifest |>
+  select(
+    .data$Molecule,
+    .data$Truth_model_role,
+    .data$Source_scenario,
+    .data$FcRn_Kd_truth_center,
+    .data$FcRn_Kd_unit
+  ) |>
+  kable(caption = "Truth simulations used in Step 2")
+```
+
+# Step 2 Simulate the nominal typical-subject reference
+
+This secondary reference uses each truth model at its central input values and
+the typical monkey physiology configured in that model. It is simulated once
+per molecule and dose on the same dense analysis grid used for the population
+profiles. The reference is checkpointed independently so it can be reused on
+restart and audited by Step 3.
+
+```{r}
+#| label: simulate-nominal-typical-reference
+
+nominal_reference_is_valid <- function(reference) {
+  required_columns <- c(
+    "Molecule", "Dose_mg_kg", "BodyWeight_kg",
+    "Target_reference_concentration_internal", "Time_h", "Conc_umol_L"
+  )
+  if (!is.list(reference) ||
+      !identical(reference$format_version, 1L) ||
+      !identical(reference$step1_input_md5, STEP1_INPUT_MD5) ||
+      !is.data.frame(reference$profiles) ||
+      !all(required_columns %in% names(reference$profiles))) {
+    return(FALSE)
+  }
+
+  profiles <- reference$profiles
+  expected_rows <- length(settings$molecules) *
+    length(settings$doses_mg_kg) * length(settings$dense_time_h)
+  if (nrow(profiles) != expected_rows ||
+      any(!is.finite(profiles$Dose_mg_kg)) ||
+      any(!is.finite(profiles$BodyWeight_kg)) ||
+      any(!is.finite(profiles$Target_reference_concentration_internal)) ||
+      any(!is.finite(profiles$Time_h)) ||
+      any(!is.finite(profiles$Conc_umol_L)) ||
+      any(profiles$Dose_mg_kg <= 0) ||
+      any(profiles$BodyWeight_kg <= 0) ||
+      any(profiles$Target_reference_concentration_internal <= 0) ||
+      any(profiles$Conc_umol_L < 0) ||
+      anyDuplicated(profiles[c("Molecule", "Dose_mg_kg", "Time_h")]) > 0L) {
+    return(FALSE)
+  }
+
+  profile_times <- split(
+    profiles$Time_h,
+    interaction(profiles$Molecule, profiles$Dose_mg_kg, drop = TRUE)
+  )
+  length(profile_times) == length(settings$molecules) *
+    length(settings$doses_mg_kg) &&
+    setequal(unique(profiles$Molecule), settings$molecules) &&
+    setequal(unique(profiles$Dose_mg_kg), settings$doses_mg_kg) &&
+    all(vapply(
+      profile_times,
+      function(x) identical(sort(as.numeric(x)), settings$dense_time_h),
+      logical(1)
+    ))
+}
+
+interpolate_nominal_profile <- function(
+  time_h,
+  concentration,
+  requested_time_h
+) {
+  keep <- is.finite(time_h) & is.finite(concentration) & concentration >= 0
+  time_h <- as.numeric(time_h[keep])
+  concentration <- as.numeric(concentration[keep])
+  ord <- order(time_h)
+  time_h <- time_h[ord]
+  concentration <- concentration[ord]
+
+  if (length(unique(time_h)) < 2L ||
+      min(time_h) > min(requested_time_h) ||
+      max(time_h) < max(requested_time_h)) {
+    stop("A nominal typical-subject output does not cover the dense grid.")
+  }
+
+  approx(
+    x = time_h,
+    y = concentration,
+    xout = requested_time_h,
+    method = "linear",
+    rule = 1,
+    ties = mean
+  )$y
+}
+
+nominal_reference <- NULL
+if (file.exists(NOMINAL_REFERENCE_RDS) && !FORCE_RERUN) {
+  nominal_reference <- tryCatch(
+    readRDS(NOMINAL_REFERENCE_RDS),
+    error = function(e) NULL
+  )
+}
+
+if (is.null(nominal_reference) ||
+    !nominal_reference_is_valid(nominal_reference)) {
+  nominal_profiles <- map_dfr(settings$molecules, function(molecule) {
+    simulation <- simulations[[molecule]]
+    typical_body_weight_kg <- getQuantityValuesByPath(
+      quantityPaths = settings$weight_path,
+      simulation = simulation,
+      units = "kg"
+    )
+    typical_target_internal <- getQuantityValuesByPath(
+      quantityPaths = settings$target_reference_path,
+      simulation = simulation
+    )
+    if (length(typical_body_weight_kg) != 1L ||
+        !is.finite(typical_body_weight_kg) ||
+        typical_body_weight_kg <= 0 ||
+        length(typical_target_internal) != 1L ||
+        !is.finite(typical_target_internal) ||
+        typical_target_internal <= 0) {
+      stop("The nominal model lacks valid typical physiology for ", molecule, ".")
+    }
+
+    map_dfr(settings$doses_mg_kg, function(dose_value) {
+      message(
+        "Nominal typical-subject reference: ", molecule, ", ",
+        dose_value, " mg/kg."
+      )
+      setParameterValuesByPath(
+        parameterPaths = settings$dose_path,
+        values = dose_value,
+        simulation = simulation,
+        units = "mg/kg"
+      )
+      results <- runSimulations(simulations = simulation)[[1]]
+      output <- simulationResultsToDataFrame(
+        simulationResults = results,
+        quantitiesOrPaths = settings$plasma_output_path
+      ) |>
+        filter(.data$paths == settings$plasma_output_path)
+      concentration <- interpolate_nominal_profile(
+        time_h = as.numeric(output$Time) / 60,
+        concentration = as.numeric(output$simulationValues),
+        requested_time_h = settings$dense_time_h
+      )
+      rm(results)
+
+      tibble(
+        Molecule = molecule,
+        Dose_mg_kg = dose_value,
+        BodyWeight_kg = as.numeric(typical_body_weight_kg),
+        Target_reference_concentration_internal =
+          as.numeric(typical_target_internal),
+        Time_h = settings$dense_time_h,
+        Conc_umol_L = concentration
+      )
+    })
+  })
+
+  nominal_reference <- list(
+    format_version = 1L,
+    step1_input_md5 = STEP1_INPUT_MD5,
+    reference_definition = paste(
+      "Central truth-model inputs and configured typical monkey physiology;",
+      "dense profile for each molecule and dose"
+    ),
+    profiles = nominal_profiles,
+    created_at = Sys.time()
+  )
+  if (!nominal_reference_is_valid(nominal_reference)) {
+    stop("The nominal typical-subject reference failed validation.")
+  }
+  atomic_save_rds(nominal_reference, NOMINAL_REFERENCE_RDS)
+  message("Saved nominal reference: ", basename(NOMINAL_REFERENCE_RDS))
+} else {
+  message("Loaded nominal reference: ", basename(NOMINAL_REFERENCE_RDS))
+}
+
+nominal_reference$profiles |>
+  group_by(.data$Molecule, .data$Dose_mg_kg) |>
+  summarise(
+    Typical_body_weight_kg = first(.data$BodyWeight_kg),
+    Dense_time_points = n(),
+    Maximum_time_days = max(.data$Time_h) / 24,
+    .groups = "drop"
+  ) |>
+  kable(caption = "Nominal typical-subject dense reference inventory")
+```
+
+# Step 3 Construct restartable simulation helpers
+
+Within each batch, 10 replicate-level five-parameter vectors are crossed with
+the 50 monkey rows. Target reference concentration is then added from the Step
+1 between-monkey table. The generated population therefore contains 500
+profiles, and every batch is simulated independently at one dose.
+
+```{r}
+#| label: simulation-helpers
+
+empty_raw_output <- function() {
+  tibble(
+    BatchIndividualId = integer(),
+    ModelTime_h = numeric(),
+    Conc_umol_L = numeric()
+  )
+}
+
+empty_profiles <- function() {
+  tibble(
+    Molecule = character(),
+    Variability_CV = numeric(),
+    Replicate = integer(),
+    PopulationIndividualId = integer(),
+    Monkey_index = integer(),
+    TruthProfileId = character(),
+    BatchId = integer(),
+    Dose_mg_kg = numeric(),
+    BodyWeight_kg = numeric(),
+    Target_reference_concentration_internal = numeric(),
+    Time_h = numeric(),
+    Conc_umol_L = numeric()
+  )
+}
+
+empty_failures <- function() {
+  tibble(
+    Timestamp = character(),
+    Molecule = character(),
+    Variability_CV = numeric(),
+    Dose_mg_kg = numeric(),
+    BatchId = integer(),
+    Replicate = integer(),
+    PopulationIndividualId = integer(),
+    TruthProfileId = character(),
+    Error = character()
+  )
+}
+
+build_batch_population <- function(batch_row) {
+  molecule <- batch_row$Molecule[[1]]
+  cv_value <- batch_row$Variability_CV[[1]]
+  first_replicate <- batch_row$First_replicate[[1]]
+  last_replicate <- batch_row$Last_replicate[[1]]
+
+  index <- step1$crossed_profile_index |>
+    filter(
+      .data$Molecule == molecule,
+      .data$Variability_CV == cv_value,
+      .data$Replicate >= first_replicate,
+      .data$Replicate <= last_replicate
+    ) |>
+    arrange(.data$Replicate, .data$Monkey_index) |>
+    mutate(BatchIndividualId = seq.int(0L, n() - 1L))
+
+  expected_profiles <- batch_row$Expected_profiles[[1]]
+  if (nrow(index) != expected_profiles ||
+      anyDuplicated(index$TruthProfileId) > 0L) {
+    stop("The profile index is incomplete for ", batch_row$Checkpoint_key, ".")
+  }
+
+  population_rows <- match(
+    index$PopulationIndividualId,
+    step1$base_population$IndividualId
+  )
+  if (anyNA(population_rows)) {
+    stop("A batch profile does not match a Step 1 monkey row.")
+  }
+  expanded_table <- step1$base_population[
+    population_rows,
+    ,
+    drop = FALSE
+  ]
+  expanded_table$IndividualId <- index$BatchIndividualId
+
+  cell_draws <- step1$parameter_draws |>
+    filter(
+      .data$Molecule == molecule,
+      .data$Variability_CV == cv_value,
+      .data$Replicate >= first_replicate,
+      .data$Replicate <= last_replicate
+    ) |>
+    arrange(.data$Replicate)
+  if (nrow(cell_draws) != batch_row$Replicates[[1]]) {
+    stop("The shared parameter-draw table is incomplete for the batch.")
+  }
+
+  for (parameter_name in names(settings$parameter_paths)) {
+    values_by_replicate <- setNames(
+      cell_draws[[parameter_name]],
+      cell_draws$Replicate
+    )
+    expanded_table[[settings$parameter_paths[[parameter_name]]]] <- unname(
+      values_by_replicate[as.character(index$Replicate)]
+    )
+  }
+  expanded_table[[settings$target_reference_path]] <-
+    index$Target_reference_concentration_internal
+
+  varying_paths <- c(
+    unname(settings$parameter_paths),
+    settings$target_reference_path
+  )
+  if (any(!is.finite(as.matrix(expanded_table[varying_paths]))) ||
+      any(as.matrix(expanded_table[varying_paths]) <= 0)) {
+    stop("The crossed population contains invalid model input values.")
+  }
+
+  population <- populationFromDataFrame(expanded_table)
+  if (population$count != expected_profiles) {
+    stop("The crossed simulation population has the wrong size.")
+  }
+
+  list(
+    population = population,
+    table = expanded_table,
+    index = index
+  )
+}
+
+make_population_subset <- function(population_bundle, batch_ids) {
+  batch_ids <- as.integer(batch_ids)
+  subset_index <- population_bundle$index |>
+    filter(.data$BatchIndividualId %in% batch_ids) |>
+    arrange(match(.data$BatchIndividualId, batch_ids)) |>
+    mutate(RunIndividualId = seq.int(0L, n() - 1L))
+
+  if (!setequal(subset_index$BatchIndividualId, batch_ids)) {
+    stop("A requested batch individual is absent from the population.")
+  }
+
+  table_rows <- match(
+    subset_index$BatchIndividualId,
+    population_bundle$table$IndividualId
+  )
+  subset_table <- population_bundle$table[table_rows, , drop = FALSE]
+  subset_table$IndividualId <- subset_index$RunIndividualId
+
+  list(
+    population = populationFromDataFrame(subset_table),
+    index = subset_index
+  )
+}
+
+run_population_subset <- function(
+  simulation,
+  population_bundle,
+  batch_ids,
+  options
+) {
+  subset_bundle <- make_population_subset(population_bundle, batch_ids)
+  results <- runSimulations(
+    simulations = simulation,
+    population = subset_bundle$population,
+    simulationRunOptions = options
+  )[[1]]
+
+  output <- getOutputValues(
+    simulationResults = results,
+    quantitiesOrPaths = settings$plasma_output_path
+  )$data |>
+    as_tibble() |>
+    transmute(
+      RunIndividualId = as.integer(.data$IndividualId),
+      ModelTime_h = as.numeric(.data$Time) / 60,
+      Conc_umol_L = as.numeric(.data[[settings$plasma_output_path]])
+    ) |>
+    left_join(
+      subset_bundle$index |>
+        select(.data$RunIndividualId, .data$BatchIndividualId),
+      by = "RunIndividualId"
+    ) |>
+    select(-.data$RunIndividualId)
+
+  if (anyNA(output$BatchIndividualId)) {
+    stop("PK-Sim returned an individual identifier absent from the batch.")
+  }
+  rm(results)
+  invisible(gc())
+  output
+}
+
+complete_profile_ids <- function(output) {
+  if (nrow(output) == 0L) return(integer())
+  output |>
+    group_by(.data$BatchIndividualId) |>
+    summarise(
+      All_values_valid = all(
+        is.finite(.data$ModelTime_h) &
+          is.finite(.data$Conc_umol_L) &
+          .data$Conc_umol_L >= 0
+      ),
+      N_time = n_distinct(.data$ModelTime_h),
+      First_time_h = min(.data$ModelTime_h),
+      Last_time_h = max(.data$ModelTime_h),
+      .groups = "drop"
+    ) |>
+    filter(
+      .data$All_values_valid,
+      .data$N_time >= 2L,
+      .data$First_time_h <= min(settings$dense_time_h),
+      .data$Last_time_h >= max(settings$dense_time_h)
+    ) |>
+    pull(.data$BatchIndividualId)
+}
+
+detected_cores <- parallel::detectCores(logical = TRUE)
+if (!is.finite(detected_cores)) detected_cores <- 2L
+run_options <- SimulationRunOptions$new()
+run_options$checkForNegativeValues <- FALSE
+run_options$numberOfCores <- min(8L, max(1L, detected_cores - 1L))
+
+retry_options <- SimulationRunOptions$new()
+retry_options$checkForNegativeValues <- FALSE
+retry_options$numberOfCores <- 1L
+
+run_complete_batch <- function(
+  simulation,
+  population_bundle,
+  batch_row
+) {
+  expected_ids <- population_bundle$index$BatchIndividualId
+  initial_error <- NULL
+  retry_errors <- character()
+
+  output <- tryCatch(
+    run_population_subset(
+      simulation,
+      population_bundle,
+      expected_ids,
+      run_options
+    ),
+    error = function(e) {
+      initial_error <<- conditionMessage(e)
+      empty_raw_output()
+    }
+  )
+
+  completed_ids <- complete_profile_ids(output)
+  missing_ids <- setdiff(expected_ids, completed_ids)
+
+  if (length(missing_ids) == length(expected_ids)) {
+    message("  No complete profiles; retrying the whole batch with one core.")
+    output <- tryCatch(
+      run_population_subset(
+        simulation,
+        population_bundle,
+        expected_ids,
+        retry_options
+      ),
+      error = function(e) {
+        initial_error <<- paste(
+          c(initial_error, "Single-core batch retry", conditionMessage(e)),
+          collapse = "; "
+        )
+        empty_raw_output()
+      }
+    )
+    completed_ids <- complete_profile_ids(output)
+    missing_ids <- setdiff(expected_ids, completed_ids)
+  }
+
+  if (length(missing_ids) > 0L) {
+    message(
+      "  Retrying ", length(missing_ids),
+      " incomplete profile(s) individually with one core."
+    )
+    retry_output <- map_dfr(missing_ids, function(batch_id) {
+      tryCatch(
+        run_population_subset(
+          simulation,
+          population_bundle,
+          batch_id,
+          retry_options
+        ),
+        error = function(e) {
+          retry_errors[[as.character(batch_id)]] <<- conditionMessage(e)
+          empty_raw_output()
+        }
+      )
+    })
+    output <- bind_rows(
+      output |> filter(.data$BatchIndividualId %in% completed_ids),
+      retry_output
+    ) |>
+      distinct(
+        .data$BatchIndividualId,
+        .data$ModelTime_h,
+        .keep_all = TRUE
+      )
+  }
+
+  successful_ids <- intersect(expected_ids, complete_profile_ids(output))
+  still_missing <- setdiff(expected_ids, successful_ids)
+  fallback_error <- if (is.null(initial_error)) {
+    "Incomplete or invalid output after single-profile retry"
+  } else {
+    paste("Initial batch error:", initial_error)
+  }
+
+  failures <- if (length(still_missing) == 0L) {
+    empty_failures()
+  } else {
+    population_bundle$index |>
+      filter(.data$BatchIndividualId %in% still_missing) |>
+      transmute(
+        Timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        Molecule = batch_row$Molecule[[1]],
+        Variability_CV = batch_row$Variability_CV[[1]],
+        Dose_mg_kg = batch_row$Dose_mg_kg[[1]],
+        BatchId = batch_row$BatchId[[1]],
+        Replicate = .data$Replicate,
+        PopulationIndividualId = .data$PopulationIndividualId,
+        TruthProfileId = .data$TruthProfileId,
+        Error = map_chr(.data$BatchIndividualId, function(batch_id) {
+          value <- retry_errors[[as.character(batch_id)]]
+          if (is.null(value) || is.na(value) || value == "") {
+            fallback_error
+          } else {
+            value
+          }
+        })
+      )
+  }
+
+  list(
+    output = output |>
+      filter(.data$BatchIndividualId %in% successful_ids),
+    failures = failures
+  )
+}
+
+interpolate_batch <- function(raw_output, population_bundle, batch_row) {
+  if (nrow(raw_output) == 0L) return(empty_profiles())
+
+  profiles <- raw_output |>
+    group_by(.data$BatchIndividualId) |>
+    group_modify(~ {
+      keep <- is.finite(.x$ModelTime_h) & is.finite(.x$Conc_umol_L) &
+        .x$Conc_umol_L >= 0
+      time_h <- as.numeric(.x$ModelTime_h[keep])
+      concentration <- as.numeric(.x$Conc_umol_L[keep])
+      ord <- order(time_h)
+      tibble(
+        Time_h = settings$dense_time_h,
+        Conc_umol_L = approx(
+          x = time_h[ord],
+          y = concentration[ord],
+          xout = settings$dense_time_h,
+          method = "linear",
+          rule = 1,
+          ties = mean
+        )$y
+      )
+    }) |>
+    ungroup() |>
+    left_join(
+      population_bundle$index |>
+        select(
+          .data$BatchIndividualId,
+          .data$Molecule,
+          .data$Variability_CV,
+          .data$Replicate,
+          .data$PopulationIndividualId,
+          .data$Monkey_index,
+          .data$TruthProfileId,
+          .data$BatchId,
+          .data$BodyWeight_kg,
+          .data$Target_reference_concentration_internal
+        ),
+      by = "BatchIndividualId"
+    ) |>
+    transmute(
+      .data$Molecule,
+      .data$Variability_CV,
+      .data$Replicate,
+      .data$PopulationIndividualId,
+      .data$Monkey_index,
+      .data$TruthProfileId,
+      .data$BatchId,
+      Dose_mg_kg = batch_row$Dose_mg_kg[[1]],
+      .data$BodyWeight_kg,
+      .data$Target_reference_concentration_internal,
+      .data$Time_h,
+      .data$Conc_umol_L
+    )
+
+  profiles
+}
+
+profiles_are_complete <- function(profiles, expected_success_ids) {
+  required_columns <- names(empty_profiles())
+  if (!is.data.frame(profiles) ||
+      !all(required_columns %in% names(profiles)) ||
+      !setequal(unique(profiles$TruthProfileId), expected_success_ids) ||
+      nrow(profiles) != length(expected_success_ids) *
+        length(settings$dense_time_h) ||
+      any(!is.finite(profiles$Conc_umol_L)) ||
+      any(profiles$Conc_umol_L < 0)) {
+    return(FALSE)
+  }
+  profile_times <- split(profiles$Time_h, profiles$TruthProfileId)
+  all(vapply(
+    profile_times,
+    function(x) identical(sort(as.numeric(x)), settings$dense_time_h),
+    logical(1)
+  ))
+}
+
+checkpoint_path <- function(checkpoint_key) {
+  file.path(CHECKPOINT_DIR, paste0(checkpoint_key, ".rds"))
+}
+
+checkpoint_is_valid <- function(
+  checkpoint,
+  batch_row,
+  expected_truth_ids,
+  require_zero_failures = FALSE
+) {
+  if (!is.list(checkpoint) ||
+      !identical(checkpoint$format_version, 2L) ||
+      !identical(checkpoint$step1_input_md5, STEP1_INPUT_MD5) ||
+      !identical(checkpoint$molecule, batch_row$Molecule[[1]]) ||
+      !isTRUE(all.equal(
+        checkpoint$variability_cv,
+        batch_row$Variability_CV[[1]]
+      )) ||
+      !isTRUE(all.equal(
+        checkpoint$dose_mg_kg,
+        batch_row$Dose_mg_kg[[1]]
+      )) ||
+      !identical(checkpoint$batch_id, batch_row$BatchId[[1]]) ||
+      !identical(
+        sort(checkpoint$truth_profile_ids),
+        sort(expected_truth_ids)
+      ) ||
+      !identical(as.numeric(checkpoint$dense_time_h), settings$dense_time_h)) {
+    return(FALSE)
+  }
+
+  if (require_zero_failures && nrow(checkpoint$failures) > 0L) {
+    return(FALSE)
+  }
+  failed_ids <- checkpoint$failures$TruthProfileId
+  success_ids <- unique(checkpoint$profiles$TruthProfileId)
+  identical(
+    sort(c(success_ids, failed_ids)),
+    sort(expected_truth_ids)
+  ) &&
+    length(intersect(success_ids, failed_ids)) == 0L &&
+    profiles_are_complete(checkpoint$profiles, success_ids)
+}
+```
+
+# Step 4 Run or resume every checkpoint batch
+
+```{r}
+#| label: run-checkpointed-simulations
+
+run_started <- Sys.time()
+batch_manifest <- step1$batch_manifest |>
+  arrange(
+    factor(.data$Molecule, levels = settings$molecules),
+    .data$Variability_CV,
+    .data$Dose_mg_kg,
+    .data$BatchId
+  )
+
+for (batch_number in seq_len(nrow(batch_manifest))) {
+  batch_row <- batch_manifest[batch_number, , drop = FALSE]
+  checkpoint_file <- checkpoint_path(batch_row$Checkpoint_key[[1]])
+  population_bundle <- build_batch_population(batch_row)
+  expected_truth_ids <- population_bundle$index$TruthProfileId
+  checkpoint <- NULL
+
+  if (file.exists(checkpoint_file) && !FORCE_RERUN) {
+    checkpoint <- tryCatch(readRDS(checkpoint_file), error = function(e) NULL)
+  }
+
+  if (!is.null(checkpoint) && checkpoint_is_valid(
+    checkpoint,
+    batch_row,
+    expected_truth_ids,
+    require_zero_failures = TRUE
+  )) {
+    message(
+      "Batch ", batch_number, "/", nrow(batch_manifest),
+      " loaded: ", basename(checkpoint_file)
+    )
+    next
+  }
+
+  molecule <- batch_row$Molecule[[1]]
+  simulation <- simulations[[molecule]]
+  dose_value <- batch_row$Dose_mg_kg[[1]]
+  message(
+    "Batch ", batch_number, "/", nrow(batch_manifest), ": ",
+    molecule, ", ", 100 * batch_row$Variability_CV[[1]],
+    "% CV, ", dose_value, " mg/kg."
+  )
+
+  setParameterValuesByPath(
+    parameterPaths = settings$dose_path,
+    values = dose_value,
+    simulation = simulation,
+    units = "mg/kg"
+  )
+
+  batch_result <- run_complete_batch(
+    simulation,
+    population_bundle,
+    batch_row
+  )
+  dense_profiles <- interpolate_batch(
+    batch_result$output,
+    population_bundle,
+    batch_row
+  )
+  successful_ids <- setdiff(
+    expected_truth_ids,
+    batch_result$failures$TruthProfileId
+  )
+
+  if (!profiles_are_complete(dense_profiles, successful_ids)) {
+    stop("Dense-profile validation failed for ", batch_row$Checkpoint_key, ".")
+  }
+
+  checkpoint <- list(
+    format_version = 2L,
+    step1_input_md5 = STEP1_INPUT_MD5,
+    molecule = molecule,
+    variability_cv = batch_row$Variability_CV[[1]],
+    dose_mg_kg = dose_value,
+    batch_id = batch_row$BatchId[[1]],
+    replicate_ids = seq.int(
+      batch_row$First_replicate[[1]],
+      batch_row$Last_replicate[[1]]
+    ),
+    truth_profile_ids = expected_truth_ids,
+    dense_time_h = settings$dense_time_h,
+    profiles = dense_profiles,
+    failures = batch_result$failures,
+    created_at = Sys.time()
+  )
+  atomic_save_rds(checkpoint, checkpoint_file)
+  message("  Saved checkpoint: ", basename(checkpoint_file))
+
+  rm(batch_result, dense_profiles, checkpoint, population_bundle)
+  invisible(gc())
+}
+
+run_finished <- Sys.time()
+```
+
+# Step 5 Validate the complete checkpoint collection
+
+Only metadata are accumulated here; dense profiles remain in their independent
+checkpoint files so the final scale-up does not require one very large object
+in memory. Step 3 will stream through these same files.
+
+```{r}
+#| label: validate-checkpoint-collection
+
+inventory_rows <- vector("list", nrow(batch_manifest))
+failure_rows <- vector("list", nrow(batch_manifest))
+
+for (batch_number in seq_len(nrow(batch_manifest))) {
+  batch_row <- batch_manifest[batch_number, , drop = FALSE]
+  checkpoint_file <- checkpoint_path(batch_row$Checkpoint_key[[1]])
+  assert_files_exist(checkpoint_file, "Step 2 checkpoint")
+  checkpoint <- readRDS(checkpoint_file)
+
+  expected_truth_ids <- step1$crossed_profile_index |>
+    filter(
+      .data$Molecule == batch_row$Molecule[[1]],
+      .data$Variability_CV == batch_row$Variability_CV[[1]],
+      .data$Replicate >= batch_row$First_replicate[[1]],
+      .data$Replicate <= batch_row$Last_replicate[[1]]
+    ) |>
+    pull(.data$TruthProfileId)
+
+  if (!checkpoint_is_valid(checkpoint, batch_row, expected_truth_ids)) {
+    stop("Checkpoint validation failed: ", checkpoint_file)
+  }
+
+  inventory_rows[[batch_number]] <- tibble(
+    Checkpoint_key = batch_row$Checkpoint_key[[1]],
+    Molecule = batch_row$Molecule[[1]],
+    Variability_CV = batch_row$Variability_CV[[1]],
+    Dose_mg_kg = batch_row$Dose_mg_kg[[1]],
+    BatchId = batch_row$BatchId[[1]],
+    Expected_profiles = length(expected_truth_ids),
+    Successful_profiles = n_distinct(checkpoint$profiles$TruthProfileId),
+    Failed_profiles = nrow(checkpoint$failures),
+    Dense_rows = nrow(checkpoint$profiles),
+    Checkpoint_file = normalizePath(
+      checkpoint_file,
+      winslash = "/",
+      mustWork = TRUE
+    ),
+    Bytes = file.info(checkpoint_file)$size,
+    MD5 = unname(tools::md5sum(checkpoint_file)),
+    Completed_at = as.character(checkpoint$created_at)
+  )
+  failure_rows[[batch_number]] <- checkpoint$failures
+  rm(checkpoint)
+}
+
+checkpoint_inventory <- bind_rows(inventory_rows) |>
+  arrange(
+    factor(.data$Molecule, levels = settings$molecules),
+    .data$Variability_CV,
+    .data$Dose_mg_kg,
+    .data$BatchId
+  )
+failed_profiles <- bind_rows(c(list(empty_failures()), failure_rows)) |>
+  distinct(
+    .data$Molecule,
+    .data$Variability_CV,
+    .data$Dose_mg_kg,
+    .data$Replicate,
+    .data$PopulationIndividualId,
+    .keep_all = TRUE
+  )
+
+if (nrow(checkpoint_inventory) != nrow(batch_manifest) ||
+    any(checkpoint_inventory$Expected_profiles !=
+        checkpoint_inventory$Successful_profiles +
+          checkpoint_inventory$Failed_profiles)) {
+  stop("The complete Step 2 checkpoint inventory is inconsistent.")
+}
+
+write_csv(checkpoint_inventory, CHECKPOINT_INVENTORY_FILE)
+write_csv(failed_profiles, FAILED_PROFILE_FILE)
+
+step2_index <- list(
+  format_version = 1L,
+  workflow_stage = "Step 2: run simulations",
+  step1_rds = normalizePath(STEP1_RDS, winslash = "/", mustWork = TRUE),
+  step1_input_md5 = STEP1_INPUT_MD5,
+  run_started = run_started,
+  run_finished = run_finished,
+  simulation_cores = run_options$numberOfCores,
+  retry_cores = retry_options$numberOfCores,
+  nominal_reference_file = normalizePath(
+    NOMINAL_REFERENCE_RDS,
+    winslash = "/",
+    mustWork = TRUE
+  ),
+  nominal_reference_md5 = unname(tools::md5sum(NOMINAL_REFERENCE_RDS)),
+  checkpoint_inventory = checkpoint_inventory,
+  failed_profiles = failed_profiles
+)
+saveRDS(step2_index, STEP2_INDEX_RDS, compress = "xz")
+
+artifact_paths <- c(
+  STEP2_INDEX_RDS,
+  NOMINAL_REFERENCE_RDS,
+  CHECKPOINT_INVENTORY_FILE,
+  FAILED_PROFILE_FILE,
+  SETTINGS_FILE,
+  PACKAGE_FILE
+)
+artifact_manifest <- tibble(
+  Artifact = basename(artifact_paths),
+  Path = normalizePath(artifact_paths, winslash = "/", mustWork = TRUE),
+  Bytes = file.info(artifact_paths)$size,
+  MD5 = unname(tools::md5sum(artifact_paths))
+)
+write_csv(artifact_manifest, ARTIFACT_MANIFEST_FILE)
+
+checkpoint_inventory |>
+  group_by(.data$Molecule, .data$Variability_CV) |>
+  summarise(
+    Checkpoints = n(),
+    Successful_profiles = sum(.data$Successful_profiles),
+    Failed_profiles = sum(.data$Failed_profiles),
+    Dense_rows = sum(.data$Dense_rows),
+    .groups = "drop"
+  ) |>
+  mutate(`Variability CV (%)` = 100 * .data$Variability_CV) |>
+  select(
+    .data$Molecule,
+    `Variability CV (%)`,
+    .data$Checkpoints,
+    .data$Successful_profiles,
+    .data$Failed_profiles,
+    .data$Dense_rows
+  ) |>
+  kable(caption = "Step 2 checkpoint completion summary")
+
+if (nrow(failed_profiles) > 0L) {
+  message(
+    "Step 2 completed with ", nrow(failed_profiles),
+    " failed profile(s). Step 3 will stop until they are resolved."
+  )
+}
+```
+
+# Step 6 Restore output selections and record the session
+
+```{r}
+#| label: restore-and-session-info
+
+walk(settings$molecules, function(molecule) {
+  simulation <- simulations[[molecule]]
+  clearOutputs(simulation = simulation)
+  walk(
+    original_outputs[[molecule]],
+    ~ addOutputs(quantitiesOrPaths = .x, simulation = simulation)
+  )
+})
+
+artifact_manifest |>
+  select(.data$Artifact, .data$Bytes, .data$MD5) |>
+  kable(caption = "Step 2 non-checkpoint artifacts and checksums")
+
+sessionInfo()
+```

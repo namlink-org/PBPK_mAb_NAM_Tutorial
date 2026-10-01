@@ -15,16 +15,19 @@ The supplied analysis has two primary objectives:
 
 A secondary objective is to evaluate the prediction workflow retrospectively
 using eight intravenously administered mAbs across five targets. The analysis
-compares predicted and observed concentration-time profiles and PK endpoints,
-then uses Golimumab as a worked example to show how physiological variability
-and uncertainty in mechanistic inputs affect the performance of candidate study
-designs.
+compares predicted and observed concentration-time profiles and PK endpoints.
+The study-design reanalysis then uses Golimumab and Nivolumab truth models to
+show how between-monkey variability and uncertainty in mechanistic inputs affect
+the performance of candidate reduced-study designs.
 
-Observed concentration data are not used to fit or calibrate the PBPK models.
-They are used retrospectively to define the evaluated dose scenarios and to
-compare predictions with observations after simulations have been completed.
-The reduced-study analysis is also model-conditional: it treats the nominal,
-uncalibrated Golimumab model as the reference for the simulation exercise.
+Observed concentration data are not used to fit or calibrate the a priori PBPK
+models. They are used retrospectively to define the evaluated dose scenarios
+and to compare predictions with observations after simulations have been
+completed. The study-design analysis is model-conditional: its true simulations
+use the nominal, uncalibrated Golimumab model and the calibrated Nivolumab model.
+The Nivolumab model retains the a priori Anti-PD1 structure but uses an FcRn
+binding-affinity center of 0.39 micromol/L. Uncalibrated Nivolumab is not
+simulated in this exercise.
 
 ## Workflow at a glance
 
@@ -37,9 +40,11 @@ The repository implements the following stages:
    compiled PKML simulations.
 3. Use R to configure and run a priori monkey and human predictions
 4. Compare the saved predictions with observed PK data.
-5. Cross virtual-monkey physiological variability with uncertainty in the six
-   mechanistic inputs, simulate candidate studies, and compare reduced designs
-   with a rich nominal-model reference.
+5. Cross between-monkey variability in body weight and target reference
+   concentration with replicate-level uncertainty in five shared mechanistic
+   inputs, simulate candidate studies, and compare reduced designs with both
+   replicate-matched dense truth and a separate nominal typical-subject
+   reference.
 
 ## Repository organization
 
@@ -58,7 +63,7 @@ PBPK_mAb_NAM_Tutorial/
 |   |-- Scripts/                 A priori simulation and evaluation tutorial scripts
 |   `-- SimsOutputs/             Simulation runs and exported results
 |-- 03_Study_Simulations/
-|   |-- Scripts/                 Golimumab study-design simulations
+|   |-- Scripts/                 Three-step monkey study-design reanalysis
 |   `-- SimsOutputs/             Checkpoints, profiles, tables, and figures
 `-- README.md                    This master guide
 ```
@@ -68,15 +73,17 @@ PBPK_mAb_NAM_Tutorial/
 The main workflow reads the following prepared inputs:
 
 - `Monkey/mAb_data_clean.csv`: monkey concentration-time data and study
-  metadata used to define and evaluate scenarios;
+  metadata used by the a priori configuration and evaluation workflow;
+- `Monkey/mAb_data.csv`: source monkey data used by the study-design input step
+  to recover the Golimumab and Nivolumab molecular weights;
 - `Human/mAb_data_human.csv`: human concentration-time data and study metadata;
 - `Monkey/Parameters.xlsx`: monkey molecule- and target-specific mechanistic
   inputs and their sources;
 - `Human/Parameters_human.xlsx`: corresponding human inputs.
 
-`Monkey/mAb_data.csv` and `Extra/mAb_data_evolocumab.csv` are not read by the
-current executable workflow. Preserve the column and worksheet structures of
-the files that are read because the Quarto scripts validate expected fields.
+`Extra/mAb_data_evolocumab.csv` is not read by the current executable workflow.
+Preserve the column and worksheet structures of the files that are read because
+the Quarto scripts validate expected fields.
 
 ### `01_Models`
 
@@ -101,10 +108,11 @@ supplementary analyses. See the
 
 ### `03_Study_Simulations`
 
-This folder contains the Golimumab worked example for exploring smaller monkey
-PK studies. It generates a virtual population and uncertain parameter sets,
-resamples candidate designs, creates a rich nominal-model reference, and
-calculates fold-error and two-fold coverage summaries. See the
+This folder contains the current Golimumab and Nivolumab reanalysis for
+exploring smaller monkey PK studies. It prepares the uncertainty draws and
+virtual populations, runs checkpointed truth simulations, and evaluates sparse
+candidate designs against replicate-matched dense population truth. A separate
+secondary comparison uses fixed nominal typical-subject endpoints. See the
 [`03_Study_Simulations` README](03_Study_Simulations/README.md).
 
 ## Software and installation
@@ -342,66 +350,86 @@ This script reads the complete scenario-level table embedded in
 endpoints. It writes the plot and its source table under
 `02_APriori_PBPK_Workflow/SimsOutputs/Figures/` and `Tables/`.
 
-### Stage 6: Generate the Golimumab monkey study-simulation profiles
+### Stage 6: Prepare study-design inputs
 
 ```powershell
-quarto render ".\03_Study_Simulations\Scripts\Step1_APriori_Monkey_Study_Design_Simulations.qmd"
+quarto render ".\03_Study_Simulations\Scripts\Step1_Prepare_Study_Design_Inputs.qmd"
 ```
 
-The default run:
+Step 1 does not run concentration-time simulations. It creates the reviewed,
+reproducible input record for two truth models:
 
-- loads the completed a priori `Golimumab_Monkey_3_mpk` configuration;
-- generates 50 virtual monkeys;
-- draws 100 positive parameter sets at 30% and 50% coefficient of variation;
-- crosses every parameter set with all 50 monkeys;
-- simulates 0.1, 1, 3, 10, and 30 mg/kg;
-- creates 50,000 concentration-time profiles before sparse sampling;
-- resamples designs with 2, 3, or 5 dose groups and 2, 3, or 6 animals per
-  group using a fixed sampling schedule;
-- saves simulation records, input draws, diagnostic tables, figures, and
-  resumable checkpoints under `03_Study_Simulations/SimsOutputs/`.
+- nominal, uncalibrated Golimumab; and
+- calibrated Nivolumab, using the a priori Anti-PD1 model structure with FcRn
+  `Kd` set to 0.39 micromol/L. No uncalibrated Nivolumab arm is included.
 
-The simulation is batched and checkpointed. If rendering is interrupted, run
-the same command again; validated completed batches are reused. Persistent
-simulation failures are written to a diagnostic CSV and excluded explicitly.
+For each molecule and each 30% or 60% coefficient-of-variation scenario, one
+draw of FcRn `Kd`, target `Kd`, `koff`, `kint`, and `kdeg` defines one replicate.
+Those five values are shared by all 50 monkeys and all doses in that replicate.
+Body weight and target reference concentration vary between monkeys; target
+reference concentration is not also included in the replicate-level draw.
+Endogenous IgG and FcRn abundance/function are fixed between monkeys.
 
-The following PowerShell environment variables can change the computational
-controls before rendering. Their defaults are already set in the script, so
-they do not need to be defined for the manuscript-scale run.
+The full-scale configuration uses 100 replicates per molecule and variability
+scenario, 50 monkeys, and 10 replicates per simulation checkpoint. Step 1 saves
+only the consolidated R input object and the three downstream CSV files for
+parameter draws, body-weight population, and target population under
+`03_Study_Simulations/SimsOutputs/Step1_Inputs/`. Diagnostics remain in its
+self-contained HTML report.
+
+### Stage 7: Run the checkpointed truth simulations
 
 ```powershell
-$env:PBPK_TUTORIAL_N_PARAMETER_SETS = "100"
-$env:PBPK_TUTORIAL_PARAMETER_SETS_PER_BATCH = "10"
-$env:PBPK_TUTORIAL_N_REPLICATES = "1000"
-$env:PBPK_TUTORIAL_FORCE_RERUN = "false"
+quarto render ".\03_Study_Simulations\Scripts\Step2_Run_Study_Design_Simulations.qmd"
 ```
 
-Set `PBPK_TUTORIAL_FORCE_RERUN=true` only when all Step 1 simulation batches
-should be recomputed instead of reused.
+Step 2 crosses each replicate with the same 50-monkey population and simulates
+0.1, 1, 3, 10, and 30 mg/kg. This produces 100,000 population profiles before
+sparse sampling: 2 molecules x 2 variability scenarios x 100 replicates x 50
+monkeys x 5 doses. The profiles are divided among 200 independent checkpoints,
+each containing 10 replicates or 500 profiles at one molecule, variability
+scenario, and dose. A separate dense nominal typical-subject profile is also
+simulated for every molecule and dose.
 
-### Stage 7: Calculate endpoints and fold errors for reduced studies
+Validated checkpoints under
+`03_Study_Simulations/SimsOutputs/Step2_Simulations/Checkpoints/` are reused when
+the render is restarted. Set `STUDY_DESIGN_FORCE_RERUN=true` only for a
+deliberate complete recomputation. Checkpoint compatibility is tied to the
+saved Step 1 input checksum, so changed inputs cannot be silently mixed with an
+earlier run.
+
+### Stage 8: Post-process endpoints and candidate designs
 
 ```powershell
-quarto render ".\03_Study_Simulations\Scripts\Step2_Process_and_Calculate_Fold_Error.qmd"
+quarto render ".\03_Study_Simulations\Scripts\Step3_Postprocess_Study_Design_Results.qmd"
 ```
 
-This step reads the saved Step 1 R data object rather than rerunning the 50,000
-profiles. It creates a densely sampled, typical-subject reference for the
-nominal Golimumab model, calculates AUC0-28d, Cmax, and terminal clearance for
-the rich and sparse profiles, and resamples the candidate designs. Outputs are
-written under `03_Study_Simulations/SimsOutputs/Step2_Fold_Error/` and include:
+Step 3 calculates AUC0-28d, Cmax, and terminal clearance on the dense and sparse
+grids. Candidate designs contain 2, 3, or 5 dose groups and 2, 3, or 6 distinct
+monkeys per dose group. The dose sets are 1 and 10 mg/kg; 0.1, 1, and 10 mg/kg;
+or all five doses. Monkeys are sampled without replacement within a dose group,
+independently between dose groups. Designs containing the same dose and group
+size share the same selected monkeys for that replicate, and the selected set
+is used for all three endpoints.
 
-- rich reference concentration profiles and PK endpoints;
-- sparse individual endpoints;
-- replicate-level fold errors;
-- fold-error summaries;
-- endpoint-level and overall two-fold coverage tables;
-- the fold-error figure;
-- a self-contained HTML report with settings and session information.
+The primary fold error compares each sparse study mean with the arithmetic mean
+of the evaluable replicate-matched dense individual endpoints for the same
+molecule, variability scenario, replicate, and dose. This is normally all 50
+monkeys. A profile that still has no concentration-time output after the Step 2
+batch and single-profile retries is excluded only from its matched dose cell;
+the other doses for that monkey remain eligible, and sparse sampling uses the
+same evaluable pool. A separate secondary output compares the sparse estimate
+with the fixed nominal typical-subject endpoint. The latter captures design
+error plus the shift of that replicate's truth from the nominal model, so it is
+not substituted for the primary design-performance metric. Tables, figures,
+the explicit failed-profile exclusion record, endpoint checkpoints, and the
+consolidated result object are written under
+`03_Study_Simulations/SimsOutputs/Step3_Results/`.
 
-The two-fold interval is a prespecified tutorial criterion, not a universal
-decision threshold. The results describe precision under the specified model,
-input distributions, population, dose grid, and sampling schedule.
+The 0.5- to 2-fold interval is a prespecified tutorial criterion, not a
+universal decision threshold. Results are conditional on the truth models,
+input distributions, population, dose grid, sampling schedule, and endpoint
+rules used here.
 
 ## Minimal reproduction command sequence
 
@@ -411,8 +439,9 @@ With the supplied PKML models and prepared data, the core end-to-end analysis is
 quarto render ".\02_APriori_PBPK_Workflow\Scripts\01_Setup_Configurations.qmd"
 quarto render ".\02_APriori_PBPK_Workflow\Scripts\02_Run_Sims.qmd"
 quarto render ".\02_APriori_PBPK_Workflow\Scripts\03_Process_Sims_Outputs.qmd"
-quarto render ".\03_Study_Simulations\Scripts\Step1_APriori_Monkey_Study_Design_Simulations.qmd"
-quarto render ".\03_Study_Simulations\Scripts\Step2_Process_and_Calculate_Fold_Error.qmd"
+quarto render ".\03_Study_Simulations\Scripts\Step1_Prepare_Study_Design_Inputs.qmd"
+quarto render ".\03_Study_Simulations\Scripts\Step2_Run_Study_Design_Simulations.qmd"
+quarto render ".\03_Study_Simulations\Scripts\Step3_Postprocess_Study_Design_Results.qmd"
 ```
 
 Add the two optional `02_APriori_PBPK_Workflow` scripts when reproducing the
@@ -427,8 +456,10 @@ local-sensitivity and supplementary tornado-plot analyses.
   working directory.
 - The a priori simulation step records the exact timestamped output folder in
   `latest_simulation_run.txt`.
-- The study-simulation scripts use fixed seeds, record their settings, save
-  parameter draws and population records, and checkpoint expensive batches.
+- The study-simulation scripts use fixed seeds, record their settings, save the
+  required parameter-draw and population records, and checkpoint expensive
+  simulation and endpoint batches. Stored checksums prevent downstream steps
+  from accepting incompatible upstream artifacts.
 - The repository does not include an `renv` lockfile. Match the recorded
   package versions when exact reproduction matters.
 - Review warnings, failed-profile logs, inventory tables, and package versions
@@ -461,9 +492,14 @@ was renamed, update the matching R path deliberately.
 
 ### The study-simulation render was interrupted
 
-Rerun the same Step 1 command. Do not delete the checkpoint directory unless a
-fresh run is intended. Use `PBPK_TUTORIAL_FORCE_RERUN=true` only for a deliberate
-complete recomputation.
+If Step 2 was interrupted, rerender
+`Step2_Run_Study_Design_Simulations.qmd`; valid simulation checkpoints are
+reused. Do not delete its checkpoint directory unless a fresh run is intended.
+Use `STUDY_DESIGN_FORCE_RERUN=true` only for a deliberate complete simulation
+recomputation. If Step 3 was interrupted, rerender
+`Step3_Postprocess_Study_Design_Results.qmd`; valid endpoint checkpoints are
+reused. Use `STUDY_DESIGN_FORCE_POSTPROCESS=true` only when all endpoint
+checkpoints should be recalculated.
 
 ### Package or runtime loading fails
 
@@ -492,10 +528,10 @@ The following items must be supplied or reviewed explicitly:
    evaluation but should remain outside model calibration if the goal is an a
    priori prediction.
 6. Dose, sampling, uncertainty, population, and decision criteria appropriate
-   to the new question. The current `03_Study_Simulations` scripts are written
-   specifically for Golimumab and contain hard-coded molecule names, source
-   scenario, dose grid, output filenames, and reference assumptions that must
-   be changed together.
+   to the new question. The current `03_Study_Simulations` scripts explicitly
+   configure Golimumab and calibrated Nivolumab, including truth-model roles,
+   uncertainty centers, variability hierarchy, dose grid, sampling grid, and
+   reference assumptions. These settings must be reviewed and changed together.
 
 ### Appropriate uses of an LLM
 
@@ -504,8 +540,8 @@ scientific control. Useful tasks include:
 
 - extracting candidate parameter values and assay context from user-supplied
   documents into a structured evidence table;
-- drafting code changes that replace the Golimumab-specific constants and file
-  names consistently in both study-simulation scripts;
+- drafting code changes that replace molecule-specific constants and file names
+  consistently across all three study-simulation scripts;
 - creating validation checklists and small test cases before launching the full
   virtual-population run;
 - documenting assumptions, uncertainty distributions, and changes

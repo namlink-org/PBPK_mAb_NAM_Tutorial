@@ -17,13 +17,13 @@ Monkey,Clearance,Pembrolizumab,3,NA,NA,Not evaluable
 Monkey,AUC0-tlast,Pembrolizumab,30,0.9248,-0.11278669704877065,Evaluated
 Monkey,Cmax,Pembrolizumab,30,1.0477,0.06722567253197158,Evaluated
 Monkey,Clearance,Pembrolizumab,30,NA,NA,Not evaluable
-Monkey,AUC0-tlast,Atezolizumab,0.5,1.2821,0.3585087922824307,Evaluated
-Monkey,Cmax,Atezolizumab,0.5,1.4239,0.5098478298928157,Evaluated
+Monkey,AUC0-tlast,Atezolizumab,0.5,1.2608,0.33433943990692677,Evaluated
+Monkey,Cmax,Atezolizumab,0.5,1.4237,0.5096451757218281,Evaluated
 Monkey,Clearance,Atezolizumab,0.5,NA,NA,Not evaluable
-Monkey,AUC0-tlast,Atezolizumab,5,0.8982,-0.1548913727698765,Evaluated
+Monkey,AUC0-tlast,Atezolizumab,5,0.8965,-0.15762451179371229,Evaluated
 Monkey,Cmax,Atezolizumab,5,1.0919,0.12684073527769343,Evaluated
-Monkey,Clearance,Atezolizumab,5,0.9799,-0.02929356695061715,Evaluated
-Monkey,AUC0-tlast,Atezolizumab,20,0.6979,-0.5189077630936494,Evaluated
+Monkey,Clearance,Atezolizumab,5,0.9988,-0.0017322736212371209,Evaluated
+Monkey,AUC0-tlast,Atezolizumab,20,0.6977,-0.5193212612452015,Evaluated
 Monkey,Cmax,Atezolizumab,20,0.8598,-0.21792698456614754,Evaluated
 Monkey,Clearance,Atezolizumab,20,NA,NA,Not evaluable
 Monkey,AUC0-tlast,Avelumab,5,2.1495,1.1040011103212148,Evaluated
@@ -68,11 +68,11 @@ Human,Clearance,Pembrolizumab,2,NA,NA,Not evaluable
 Human,AUC0-tlast,Pembrolizumab,10,1.4084,0.4940571323136819,Evaluated
 Human,Cmax,Pembrolizumab,10,1.0153,0.021906076733622215,Evaluated
 Human,Clearance,Pembrolizumab,10,NA,NA,Not evaluable
-Human,AUC0-tlast,Atezolizumab,1,1.0934,0.12882128065013393,Evaluated
-Human,Cmax,Atezolizumab,1,1.0976,0.13435238662336282,Evaluated
+Human,AUC0-tlast,Atezolizumab,1,1.0923,0.1273691466162218,Evaluated
+Human,Cmax,Atezolizumab,1,1.0974,0.13408948092042317,Evaluated
 Human,Clearance,Atezolizumab,1,NA,NA,Not evaluable
-Human,AUC0-tlast,Atezolizumab,3,0.9384,-0.09172508152094092,Evaluated
-Human,Cmax,Atezolizumab,3,0.8303,-0.26829539660526547,Evaluated
+Human,AUC0-tlast,Atezolizumab,3,0.9383,-0.09187882959386191,Evaluated
+Human,Cmax,Atezolizumab,3,0.8302,-0.26846916294584156,Evaluated
 Human,Clearance,Atezolizumab,3,NA,NA,Not evaluable
 Human,AUC0-tlast,Atezolizumab,10,0.9919,-0.01173341457382676,Evaluated
 Human,Cmax,Atezolizumab,10,1.021,0.029982866215714315,Evaluated
