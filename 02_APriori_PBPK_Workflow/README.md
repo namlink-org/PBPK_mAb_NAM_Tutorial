@@ -9,7 +9,9 @@ The tutorial starts after two upstream tasks are complete:
 1. The species- and target-specific PK-Sim/MoBi models have been exported as PKML files under `../01_Models/`.
 2. The observed PK data and literature-derived mechanistic parameters have been formatted under `../00_Data/`.
 
-Creating the PK-Sim/MoBi models and formatting the source data are intentionally outside this tutorial. They will be documented separately.
+Creating the PK-Sim/MoBi models and formatting the source data are upstream
+tasks. The model-building workflow is documented in `../01_Models/README.qmd`;
+this tutorial starts from the compiled PKML files and prepared data.
 
 ## What makes the predictions a priori
 
@@ -17,19 +19,28 @@ The PBPK simulations use the prepared model structure, species physiology, and l
 
 ## Run order
 
-Render the Quarto files in `Scripts/` in numeric order:
+Render the core Quarto files in `Scripts/` in numeric order, followed by either
+optional analysis when needed:
 
 1. `01_Setup_Configurations.qmd` validates the inputs and creates the esqlabsR configuration workbooks.
 2. `02_Run_Sims.qmd` creates and runs all configured monkey and human simulations.
 3. `03_Process_Sims_Outputs.qmd` produces concentration-time figures, noncompartmental PK metrics, fold errors, accuracy summaries, and AUC extrapolation diagnostics.
-4. `04_SA.qmd` is an optional advanced step that performs the one-way sensitivity analysis reported in Supplementary Material S1.6.
+4. `04_LocalSensitivityAnalysis.qmd` is an optional advanced step that changes
+   target reference concentration, `kint`, and `kdeg` one at a time to 0.1 or
+   10 times the a priori value and evaluates predicted clearance. It requires
+   Steps 1 and 2; Step 3 is not a prerequisite.
+5. `05_Supplementary_Fold_Error_Tornado_Plot.qmd` is an optional reporting step
+   that reads the complete scenario-level results embedded in the rendered
+   Step 3 report and creates the supplementary fold-error tornado plot. It does
+   not rerun simulations or recalculate endpoints.
 
 Each Quarto file contains its own purpose, functions, inputs, outputs, checks,
 and interpretation notes; none sources a separate helper script. The rendered
 HTML uses embedded resources, so each tutorial is a single portable file and
 does not require a companion `<tutorial-name>_files` folder. Figures and tables
-from Tutorials 3 and 4 are displayed directly in their HTML reports rather than
-exported as separate PNG, CSV, or Excel files.
+from Steps 3 and 4 are displayed directly in their HTML reports. Step 5 also
+exports its final figure and source table as standalone files for manuscript
+use.
 
 ## Administration durations
 
@@ -53,11 +64,15 @@ plus one self-contained HTML report per tutorial:
 - `SimsOutputs/SimulationResults/<run>/`: scenario-level simulation CSV and PKML files;
 - `SimsOutputs/latest_simulation_run.txt`: the simulation folder selected by downstream scripts;
 - `Scripts/<tutorial-name>.html`: one self-contained tutorial report with all
-  displayed figures, tables, settings, and R session information embedded.
+  displayed figures, tables, settings, and R session information embedded;
+- `SimsOutputs/Figures/Supplement_Fold_Error_Tornado_Monkey_Human.png`: the
+  standalone supplementary plot created by Step 5; and
+- `SimsOutputs/Tables/Supplement_Fold_Error_Tornado_Data.csv`: the source table
+  used by that plot.
 
-Only configurations and simulation files are written separately because they
-are required inputs to later tutorial steps. Evaluation and sensitivity figures
-and tables exist only in their rendered HTML reports.
+The Step 3 evaluation and Step 4 sensitivity figures and tables remain embedded
+in their rendered HTML reports. The Step 5 outputs are intentionally written
+separately because they are manuscript-facing deliverables.
 
 ## Software
 

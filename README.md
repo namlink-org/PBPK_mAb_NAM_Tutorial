@@ -68,6 +68,10 @@ PBPK_mAb_NAM_Tutorial/
 `-- README.md                    This master guide
 ```
 
+A local `04_Docs/` directory (formerly `07_Docs/`) may contain manuscript and
+reference materials. It is intentionally excluded from version control and is
+not required to run the analysis.
+
 ### `00_Data`
 
 The main workflow reads the following prepared inputs:
@@ -114,6 +118,15 @@ virtual populations, runs checkpointed truth simulations, and evaluates sparse
 candidate designs against replicate-matched dense population truth. A separate
 secondary comparison uses fixed nominal typical-subject endpoints. See the
 [`03_Study_Simulations` README](03_Study_Simulations/README.md).
+
+In the bundled full-scale results, every primary replicate-matched summary cell
+met the prespecified 0.5- to 2-fold criterion. The corresponding secondary
+nominal-reference fractions range from 0.86 to 1.00 across dose-level summary
+cells. Two Golimumab 3 mg/kg profiles produced no concentration-time output
+after retry and were excluded only from their matched dose cells; the other
+doses for those monkeys remain in the analysis. These findings are conditional
+on the configured truth models and simulation assumptions and should not be
+generalized as universal study-design performance.
 
 ## Software and installation
 

@@ -2298,6 +2298,7 @@ table { font-size: 0.92rem; }
 </tbody>
 </table>
 <p>The <code>.pksim5</code> files are the PK-Sim source projects used to construct the base PBPK simulations. The <code>.mbp3</code> files are the corresponding MoBi projects after the simulations have been transferred to MoBi and extended with TMDD.</p>
+<p>The folder also contains <code>AntiPD1_Nivo_Calibrated.mbp3</code>, the calibrated Nivolumab project retained as provenance for the truth model used by <code>03_Study_Simulations</code>. That analysis keeps the compiled a priori Anti-PD1 structure and explicitly changes the Nivolumab FcRn binding-affinity center from 1.07 to 0.39 micromol/L. It does not replace <code>AntiPD1.mbp3</code> or <code>AntiPD1.pkml</code> in the a priori workflow, and the study-design exercise does not include an uncalibrated Nivolumab arm.</p>
 </section>
 <section id="pk-sim_mobi_files_human" class="level2">
 <h2 class="anchored" data-anchor-id="pk-sim_mobi_files_human"><code>PK-Sim_Mobi_Files_Human/</code></h2>
@@ -2528,6 +2529,7 @@ table { font-size: 0.92rem; }
 <p>In short, the file flow is:</p>
 <p><code>PK-Sim project (.pksim5)</code> → <code>MoBi project with TMDD (.mbp3)</code> → <code>compiled simulation (.pkml)</code> → <code>R-based a priori simulation workflow</code>.</p>
 <p>The <code>.pksim5</code> and <code>.mbp3</code> files should be edited only when changing the model structure. The target-specific <code>.pkml</code> files should be regenerated after such a structural change so that the R workflow uses the updated compiled model.</p>
+<p>The study-design workflow under <code>03_Study_Simulations/</code> additionally uses the nominal Anti-TNFA model for Golimumab and the calibrated Nivolumab truth-model definition described above. Its variability hierarchy, dose grid, sampling schedule, and matched-versus-nominal reference comparisons are documented in <code>03_Study_Simulations/README.md</code>.</p>
 </section>
 <section id="references-and-further-reading" class="level1">
 <h1>References and further reading</h1>

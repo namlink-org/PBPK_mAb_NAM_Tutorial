@@ -85,6 +85,38 @@ sampling:
 2 molecules x 2 CV scenarios x 100 replicates x 50 monkeys x 5 doses
 ```
 
+The dense grid contains 696 time points per profile. The completed bundled run
+therefore represents 200 validated population checkpoints plus the separate
+nominal typical-subject profiles.
+
+## Current bundled full-scale results
+
+The committed outputs correspond to the full configuration above, not the
+earlier pilot. Their principal checks and findings are:
+
+- all 200 Step 2 population checkpoints are present and validated;
+- two profiles failed to return the requested plasma mAb output after the batch
+  and single-profile retries: Golimumab, 3 mg/kg, replicate 16 at 30% CV and
+  replicate 39 at 60% CV, both for virtual monkey 13;
+- those failures reduce only the two matched dense-truth dose cells from 50 to
+  49 monkeys and are recorded explicitly rather than silently discarded;
+- every primary dose-level, endpoint-level, and all-endpoint/all-dose summary
+  cell has a within-two-fold fraction of 1.00 across the 100 replicates; and
+- the secondary fixed-nominal comparison is wider, with dose-level
+  within-two-fold fractions ranging from 0.86 to 1.00. The lowest cells are
+  Nivolumab terminal-clearance comparisons at 60% CV, illustrating why the
+  nominal comparison must not be interpreted as sparse-design error alone.
+
+These are results for the supplied truth models, distributions, population,
+doses, grids, and endpoint rules. They do not establish that any reduced design
+will perform equally well for another molecule or decision context. The source
+tables are
+[`study_design_analysis_qc.csv`](SimsOutputs/Step3_Results/Tables/study_design_analysis_qc.csv),
+[`study_design_endpoint_success.csv`](SimsOutputs/Step3_Results/Tables/study_design_endpoint_success.csv),
+[`study_design_overall_success.csv`](SimsOutputs/Step3_Results/Tables/study_design_overall_success.csv),
+and
+[`study_design_nominal_typical_fold_error_summary.csv`](SimsOutputs/Step3_Results/Tables/study_design_nominal_typical_fold_error_summary.csv).
+
 ## Run order
 
 Run the scripts in order from the repository root.
@@ -209,6 +241,7 @@ Key outputs include:
 - `study_design_replicate_matched_dense_truth.csv`;
 - `study_design_replicate_matched_fold_error.csv`;
 - `study_design_fold_error_summary.csv`; and
+- `study_design_endpoint_success.csv` and `study_design_overall_success.csv`;
 - `study_design_replicate_matched_fold_error.png`.
 
 ### Secondary: total deviation from the nominal prediction

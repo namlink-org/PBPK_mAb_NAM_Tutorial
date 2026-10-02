@@ -84,6 +84,14 @@ The `.pksim5` files are the PK-Sim source projects used to construct the base
 PBPK simulations. The `.mbp3` files are the corresponding MoBi projects after
 the simulations have been transferred to MoBi and extended with TMDD.
 
+The folder also contains `AntiPD1_Nivo_Calibrated.mbp3`, the calibrated
+Nivolumab project retained as provenance for the truth model used by
+`03_Study_Simulations`. That analysis keeps the compiled a priori Anti-PD1
+structure and explicitly changes the Nivolumab FcRn binding-affinity center
+from 1.07 to 0.39 micromol/L. It does not replace `AntiPD1.mbp3` or
+`AntiPD1.pkml` in the a priori workflow, and the study-design exercise does not
+include an uncalibrated Nivolumab arm.
+
 ## `PK-Sim_Mobi_Files_Human/`
 
 This folder contains the editable human model projects.
@@ -312,6 +320,12 @@ In short, the file flow is:
 The `.pksim5` and `.mbp3` files should be edited only when changing the model
 structure. The target-specific `.pkml` files should be regenerated after such a
 structural change so that the R workflow uses the updated compiled model.
+
+The study-design workflow under `03_Study_Simulations/` additionally uses the
+nominal Anti-TNFA model for Golimumab and the calibrated Nivolumab truth-model
+definition described above. Its variability hierarchy, dose grid, sampling
+schedule, and matched-versus-nominal reference comparisons are documented in
+`03_Study_Simulations/README.md`.
 
 # References and further reading
 
