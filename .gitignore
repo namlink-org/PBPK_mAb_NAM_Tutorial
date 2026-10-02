@@ -20,3 +20,7 @@
 03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_step3_artifact_manifest.csv
 03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_step3_settings.csv
 03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_step3_software_versions.csv
+
+# Local manuscript comparison helpers and QA renders.
+04_Docs/Manuscript/1_Revision/.codex_*
+04_Docs/Manuscript/1_Revision/.qa_tracked_changes/
