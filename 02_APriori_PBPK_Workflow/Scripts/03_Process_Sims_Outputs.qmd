@@ -593,7 +593,7 @@ a stable profile identifier from the study and subject fields.
 ```{r}
 #| label: load-observed
 
-monkey_data_file <- file.path(DATA_DIR, "Monkey", "mAb_data_clean.csv")
+monkey_data_file <- file.path(DATA_DIR, "Monkey", "mAb_data.csv")
 human_data_file <- file.path(DATA_DIR, "Human", "mAb_data_human.csv")
 parameter_files <- c(
   file.path(DATA_DIR, "Monkey", "Parameters.xlsx"),

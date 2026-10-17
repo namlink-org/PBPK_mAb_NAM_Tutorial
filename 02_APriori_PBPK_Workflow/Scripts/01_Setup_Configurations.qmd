@@ -36,7 +36,7 @@ were obtained from literature.
 
 Inputs:
 
-- `00_Data/Monkey/mAb_data_clean.csv`
+- `00_Data/Monkey/mAb_data.csv`
 - `00_Data/Human/mAb_data_human.csv`
 - `00_Data/Monkey/Parameters.xlsx`
 - `00_Data/Human/Parameters_human.xlsx`
@@ -180,7 +180,7 @@ library(knitr)
 dir.create(CONFIG_DIR, recursive = TRUE, showWarnings = FALSE)
 
 input_files <- c(
-  file.path(DATA_DIR, "Monkey", "mAb_data_clean.csv"),
+  file.path(DATA_DIR, "Monkey", "mAb_data.csv"),
   file.path(DATA_DIR, "Human", "mAb_data_human.csv"),
   file.path(DATA_DIR, "Monkey", "Parameters.xlsx"),
   file.path(DATA_DIR, "Human", "Parameters_human.xlsx"),
@@ -227,7 +227,7 @@ read_formatted_pk <- function(path, species_label) {
 }
 
 monkey_data <- read_formatted_pk(
-  file.path(DATA_DIR, "Monkey", "mAb_data_clean.csv"),
+  file.path(DATA_DIR, "Monkey", "mAb_data.csv"),
   "Monkey"
 )
 human_data <- read_formatted_pk(

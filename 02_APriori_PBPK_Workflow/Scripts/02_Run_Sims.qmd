@@ -40,8 +40,9 @@ they process the intended run instead of silently selecting an arbitrary folder.
 
 # 1. Set up and check software versions
 
-The manuscript analysis used esqlabsR 5.6.0 and ospsuite 12.4.2. The script
-accepts those versions or later.
+The bundled results were generated with esqlabsR 5.7.0 and ospsuite 12.4.3.
+The script accepts esqlabsR 5.6.0 or later and ospsuite 12.4.2 or later within
+the 12.4 series; ospsuite 13 is not supported.
 
 ```{r}
 #| label: setup

@@ -76,4 +76,4 @@ separately because they are manuscript-facing deliverables.
 
 ## Software
 
-The manuscript results were generated with R 4.5.1, PK-Sim 12.2, MoBi 12.2, esqlabsR 5.6.0, and ospsuite 12.4.2. The scripts report the installed R package versions at run time and require esqlabsR 5.6.0 or later and ospsuite 12.4.2 or later. Newer versions can contain numerical or interface changes, so record the versions used for every reproduced analysis.
+The bundled results were generated with R 4.6.1, PK-Sim 12.2, MoBi 12.2, esqlabsR 5.7.0, ospsuite 12.4.3, and rSharp 1.2.2. The scripts report the installed R package versions at run time and require esqlabsR 5.6.0 or later and ospsuite 12.4.2 or later within the 12.4 series; ospsuite 13 is not supported. Newer versions can contain numerical or interface changes, so record the versions used for every reproduced analysis.
