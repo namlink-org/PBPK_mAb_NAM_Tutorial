@@ -562,7 +562,7 @@ parameter; it does not guess a replacement.
 scenario_file <- file.path(CONFIG_DIR, "Scenarios.xlsx")
 project_configuration_file <-
   file.path(WORKFLOW_DIR, "ProjectConfiguration.xlsx")
-monkey_data_file <- file.path(DATA_DIR, "Monkey", "mAb_data_clean.csv")
+monkey_data_file <- file.path(DATA_DIR, "Monkey", "mAb_data.csv")
 human_data_file <- file.path(DATA_DIR, "Human", "mAb_data_human.csv")
 parameter_files <- c(
   file.path(DATA_DIR, "Monkey", "Parameters.xlsx"),

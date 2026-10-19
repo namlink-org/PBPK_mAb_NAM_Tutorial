@@ -76,10 +76,10 @@ not required to run the analysis.
 
 The main workflow reads the following prepared inputs:
 
-- `Monkey/mAb_data_clean.csv`: monkey concentration-time data and study
-  metadata used by the a priori configuration and evaluation workflow;
-- `Monkey/mAb_data.csv`: source monkey data used by the study-design input step
-  to recover the Golimumab and Nivolumab molecular weights;
+- `Monkey/mAb_data.csv`: monkey concentration-time data and study metadata,
+  used by the a priori configuration and evaluation workflow and by the
+  study-design input step (to recover the Golimumab and Nivolumab molecular
+  weights);
 - `Human/mAb_data_human.csv`: human concentration-time data and study metadata;
 - `Monkey/Parameters.xlsx`: monkey molecule- and target-specific mechanistic
   inputs and their sources;
@@ -130,21 +130,25 @@ generalized as universal study-design performance.
 
 ## Software and installation
 
-The manuscript analysis used the following versions:
+The bundled reports and results were generated with the following versions
+(as recorded in each rendered report):
 
 | Component | Version used |
 |---|---:|
-| R | 4.5.1 |
+| R | 4.6.1 |
 | PK-Sim | 12.2 |
 | MoBi | 12.2 |
-| esqlabsR | 5.6.0 |
-| ospsuite | 12.4.2 |
+| esqlabsR | 5.7.0 |
+| ospsuite | 12.4.3 |
+| rSharp | 1.2.2 |
 | Quarto | Not pinned in this repository |
 
-The scripts accept `esqlabsR` 5.6.0 or later and `ospsuite` 12.4.2 or later,
-but later versions may introduce interface or numerical changes. Use the
-versions above when exact reproduction is the goal, and retain the package
-versions recorded in each rendered report.
+The a priori results were also reproduced exactly with R 4.5.1, `esqlabsR`
+5.6.0 and `ospsuite` 12.4.2. The scripts accept `esqlabsR` 5.6.0 or later and
+`ospsuite` 12.4.2 or later within the 12.4 series. **`ospsuite` 13 is not
+supported:** its API changes stop `02_Run_Sims.qmd` with the error "cannot add
+bindings to a locked environment". Retain the package versions recorded in
+each rendered report.
 
 ### 1. Install PK-Sim and MoBi
 
@@ -168,7 +172,7 @@ to be rebuilt when the supplied PKML files are used unchanged.
 
 ### 2. Install R and Quarto
 
-Install 64-bit R 4.5.1 for the closest match to the recorded analysis, followed
+Install 64-bit R 4.6.1 for the closest match to the recorded analysis, followed
 by [Quarto](https://quarto.org/docs/get-started/). RStudio or another editor is
 optional; the workflow can be run entirely from PowerShell with the Quarto
 command-line interface.
@@ -205,6 +209,16 @@ install.packages(c(
 
 pak::pak("Open-Systems-Pharmacology/OSPSuite-R@v12.4.2")
 pak::pak("esqLABS/esqlabsR@v5.6.0")
+```
+
+Check that the installed `ospsuite` is in the 12.4 series. Some installation
+routes resolve dependencies to the newest `ospsuite` release, which is not
+supported:
+
+```r
+packageVersion("ospsuite")  # must be 12.4.x, not 13.x
+# If it reports 13.x, reinstall the 12.4 release:
+# pak::pak("Open-Systems-Pharmacology/OSPSuite-R@v12.4.3")
 ```
 
 If exact tagged installation is not possible on the target computer, use the
@@ -575,3 +589,21 @@ routes, the PKML entity paths, the proposed dose and sampling design, and the
 decision criteria. Ask for a traceable change plan and validation report in
 addition to code changes. This keeps the LLM focused on reproducible adaptation
 instead of unsupported scientific inference.
+
+## License
+
+- **Code** (R and Quarto scripts, configuration helpers): [MIT License](LICENSE).
+- **Data, models, documentation and figures** (`00_Data/`, `01_Models/`,
+  rendered reports, README files and images):
+  [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/).
+  Reuse is permitted with attribution to this repository and the accompanying
+  publication.
+
+The observed concentration-time data were digitised from the published
+studies and regulatory documents cited in `00_Data`; please also cite those
+original sources. Mechanistic input values retain the citations listed in the
+parameter workbooks.
+
+This repository does not redistribute PK-Sim, MoBi, `ospsuite`, `esqlabsR` or
+`rSharp`. Those tools are distributed by their authors under their own
+licenses (GPL-2.0 for the Open Systems Pharmacology Suite and its R packages).
