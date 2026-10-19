@@ -28,3 +28,6 @@
 # Local-only manuscript and reference materials (legacy name included).
 04_Docs/
 07_Docs/
+
+# Logs written by the Docker runner (docker/run_pipeline.sh).
+_pbpk_logs/
