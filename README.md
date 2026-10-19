@@ -589,3 +589,21 @@ routes, the PKML entity paths, the proposed dose and sampling design, and the
 decision criteria. Ask for a traceable change plan and validation report in
 addition to code changes. This keeps the LLM focused on reproducible adaptation
 instead of unsupported scientific inference.
+
+## License
+
+- **Code** (R and Quarto scripts, configuration helpers): [MIT License](LICENSE).
+- **Data, models, documentation and figures** (`00_Data/`, `01_Models/`,
+  rendered reports, README files and images):
+  [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/).
+  Reuse is permitted with attribution to this repository and the accompanying
+  publication.
+
+The observed concentration-time data were digitised from the published
+studies and regulatory documents cited in `00_Data`; please also cite those
+original sources. Mechanistic input values retain the citations listed in the
+parameter workbooks.
+
+This repository does not redistribute PK-Sim, MoBi, `ospsuite`, `esqlabsR` or
+`rSharp`. Those tools are distributed by their authors under their own
+licenses (GPL-2.0 for the Open Systems Pharmacology Suite and its R packages).
