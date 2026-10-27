@@ -152,10 +152,10 @@ each rendered report.
 
 ### Running with Docker (recommended for reproduction)
 
-A Docker image packages the exact software needed to run the a priori workflow
-(Stages 1–3 and 5) with no manual installation of R, Quarto, or the OSP
-packages. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/),
-then run from the repository root:
+A Docker image is provided in the `docker/` folder. It packages R, Quarto, .NET 8 and the
+OSP R packages at fixed versions, eliminating the need for a manual software installation.
+The initial image build requires 15–30 minutes and approximately 1 GB of downloads;
+subsequent runs start immediately.
 
 **Windows (PowerShell or Command Prompt):**
 ```powershell
@@ -167,15 +167,14 @@ powershell -ExecutionPolicy Bypass -File docker\pbpk.ps1 apriori
 bash docker/pbpk.sh apriori
 ```
 
-The first run builds the image (15–30 minutes, ~1 GB download). Later runs
-start in seconds. The expected final line is:
+A successful run ends with:
 
 ```
 MATCH: all fold errors reproduce the published results.
 ```
 
-See [`docker/README.md`](docker/README.md) for all available commands and the
-full list of pinned software versions inside the image.
+See [`docker/README.md`](docker/README.md) for the full command reference, platform notes,
+and pinned software versions.
 
 ### 1. Install PK-Sim and MoBi
 
