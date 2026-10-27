@@ -22,7 +22,9 @@ reports and results are written back into your folder.
 
 These versions reproduce all 132 published fold errors of the a priori workflow exactly.
 
-## Windows quick start
+## Quick start
+
+### Windows
 
 1. Install and start **Docker Desktop** (wait for "Engine running").
 2. Open **PowerShell** in the repository folder and run:
@@ -39,6 +41,26 @@ These versions reproduce all 132 published fold errors of the a priori workflow 
 The same `powershell -ExecutionPolicy Bypass -File docker\pbpk.ps1 <command>` line also works from
 Command Prompt.
 
+### macOS (Intel and Apple Silicon) and Linux
+
+1. Install and start **Docker Desktop** (wait for "Engine running").
+   On Linux, [Docker Engine](https://docs.docker.com/engine/install/) without the Desktop GUI also works.
+2. Open a terminal in the repository folder and run:
+   ```bash
+   bash docker/pbpk.sh apriori
+   ```
+   The first run builds the image (15 to 30 minutes, about 1 GB download). Later runs start immediately.
+3. Expected ending: `MATCH: all fold errors reproduce the published results.`
+4. Then:
+   ```bash
+   bash docker/pbpk.sh summary
+   ```
+
+**Apple Silicon note (M1 / M2 / M3 / M4):** the image is built for x86_64. Docker Desktop
+uses Rosetta 2 to run it transparently. The `pbpk.sh` launcher passes `--platform linux/amd64`
+automatically. Expect the first run to take slightly longer than on Intel hardware; results are
+identical.
+
 ## Commands
 
 | Command | What it does | Time |
@@ -48,16 +70,21 @@ Command Prompt.
 | `compare` | Comparison with the committed table only | seconds |
 | `sensitivity` | Stage 4 (local sensitivity analysis) | ~15 min |
 | `versions` | Software versions inside the image | seconds |
-| `build` | Rebuild the image (Windows launcher only) | 15 to 30 min |
+| `build` | Rebuild the image (launcher only) | 15 to 30 min |
 | `help` | List of commands | seconds |
 
 ## Using Docker directly (any operating system)
 
-```text
-docker build -t pbpk-mab-nam docker
-docker run --rm -v "${PWD}:/work" pbpk-mab-nam apriori      # PowerShell
-docker run --rm -v "%cd%:/work" pbpk-mab-nam apriori        # Command Prompt
-docker run --rm -v "$PWD:/work" pbpk-mab-nam apriori        # macOS / Linux
+If you prefer raw `docker` commands instead of the launchers:
+
+```bash
+# Build (all platforms — the --platform flag ensures x86_64 on Apple Silicon too)
+docker build --platform linux/amd64 -t pbpk-mab-nam docker
+
+# Run
+docker run --rm --platform linux/amd64 -v "${PWD}:/work" pbpk-mab-nam apriori   # PowerShell
+docker run --rm --platform linux/amd64 -v "%cd%:/work"  pbpk-mab-nam apriori   # Command Prompt
+docker run --rm --platform linux/amd64 -v "$PWD:/work"  pbpk-mab-nam apriori   # macOS / Linux
 ```
 
 ## What a run changes
@@ -76,7 +103,9 @@ To return to the committed state: `git checkout -- .` and delete the new dated f
   with R 4.6.1, ospsuite 12.4.3 and esqlabsR 5.7.0; both setups give identical fold errors.
 - `ospsuite` 13 is not supported by the scripts (Stage 2 fails), which is why versions are pinned.
 - Building the image needs internet access to Ubuntu, conda-forge and GitHub.
-- The image is built for x86_64 (Intel/AMD) computers.
+- The image targets x86_64 (Intel/AMD). Apple Silicon Macs run it via Rosetta 2 emulation;
+  pass `--platform linux/amd64` to `docker build` and `docker run` (the launchers do this
+  automatically).
 
 ## Using it with an AI assistant
 

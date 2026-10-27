@@ -154,11 +154,17 @@ each rendered report.
 
 A Docker image packages the exact software needed to run the a priori workflow
 (Stages 1–3 and 5) with no manual installation of R, Quarto, or the OSP
-packages. On Windows, install [Docker Desktop](https://www.docker.com/products/docker-desktop/),
+packages. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/),
 then run from the repository root:
 
+**Windows (PowerShell or Command Prompt):**
 ```powershell
 powershell -ExecutionPolicy Bypass -File docker\pbpk.ps1 apriori
+```
+
+**macOS (Intel and Apple Silicon) and Linux:**
+```bash
+bash docker/pbpk.sh apriori
 ```
 
 The first run builds the image (15–30 minutes, ~1 GB download). Later runs
@@ -168,8 +174,8 @@ start in seconds. The expected final line is:
 MATCH: all fold errors reproduce the published results.
 ```
 
-See [`docker/README.md`](docker/README.md) for all available commands, macOS/Linux
-usage, and the full list of pinned software versions inside the image.
+See [`docker/README.md`](docker/README.md) for all available commands and the
+full list of pinned software versions inside the image.
 
 ### 1. Install PK-Sim and MoBi
 

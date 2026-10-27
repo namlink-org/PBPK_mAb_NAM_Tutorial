@@ -12,7 +12,7 @@
 #
 # PK-Sim and MoBi are not needed: ospsuite bundles the simulation engine.
 
-FROM ubuntu:24.04
+FROM --platform=linux/amd64 ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     MAMBA_ROOT_PREFIX=/opt/conda
