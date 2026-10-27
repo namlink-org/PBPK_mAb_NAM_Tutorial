@@ -108,6 +108,12 @@ docker run --rm --platform linux/amd64 -v "${PWD}:/work" pbpk-mab-nam <command>
 ```
 On macOS/Linux replace `${PWD}` with `$PWD`. On Windows Command Prompt use `%cd%`.
 
+Note: the `build` command is handled by the launchers, not the container. To rebuild
+without a launcher, run the Docker build command directly:
+```
+docker build --platform linux/amd64 -t pbpk-mab-nam docker
+```
+
 ### First run
 
 The first run builds the Docker image automatically (~1 GB download, 15–30 minutes).
@@ -165,9 +171,10 @@ available as a Docker command. All results are already committed to the reposito
 | Does this design work overall? | `03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_overall_success.csv` |
 | Performance by endpoint (AUC, Cmax, clearance)? | `03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_endpoint_success.csv` |
 | Fold errors by dose? | `03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_fold_error_summary.csv` |
-| Replicate-level detail? | `03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_replicate_success.csv` |
-| Nominal reference comparison? | `03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_nominal_success.csv` |
-| Analysis summary? | `03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_analysis_summary.csv` |
+| Replicate-level fold errors? | `03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_replicate_matched_fold_error.csv` |
+| Replicate vs dense truth comparison? | `03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_replicate_matched_dense_truth.csv` |
+| Nominal/typical reference fold errors? | `03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_nominal_typical_fold_error_summary.csv` |
+| QC and analysis diagnostics? | `03_Study_Simulations/SimsOutputs/Step3_Results/Tables/study_design_analysis_qc.csv` |
 
 ### How to answer a study design question
 
