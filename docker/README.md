@@ -75,7 +75,7 @@ longer than on Intel hardware; numerical results are identical.
 
 | Command | Description | Approximate time |
 |---|---|---|
-| `apriori` | Runs Stages 1, 2, 3 and 5 in sequence; stops at the first failure; refuses to reuse an existing simulation run; compares the resulting fold-error table against the committed (published) table | 6 min |
+| `apriori` | Runs Stages 1, 2, 3 and 5 of the a priori workflow in sequence; stops at the first failure; refuses to reuse an existing simulation run; compares the resulting fold-error table against the committed (published) table. Stages 4, 6, 7 and 8 are not included. | 6 min |
 | `summary` | Prints within-2-fold counts by species and endpoint from the current fold-error table | seconds |
 | `compare` | Compares the current fold-error table against the committed table without re-running simulations | seconds |
 | `sensitivity` | Runs Stage 4 (local sensitivity analysis) | 15 min |
@@ -119,9 +119,10 @@ git checkout -- .
 
 ## Limitations
 
-- The image covers the a priori workflow only. The study-design part (`03_Study_Simulations`)
-  uses the same packages but simulates approximately 100,000 profiles; it has not been
-  validated in this environment.
+- The image covers the a priori workflow only (Stages 1–5). Stages 6, 7 and 8
+  (`03_Study_Simulations`) use the same packages but simulate approximately 100,000 profiles
+  and take several hours; they have not been validated in this environment and are not
+  available as Docker commands.
 - `ospsuite` 13 is incompatible with the current scripts (Stage 2 fails with a locked-
   environment error); package versions are therefore pinned.
 - Building the image requires internet access to the Ubuntu package repository,
