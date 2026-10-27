@@ -150,6 +150,32 @@ supported:** its API changes stop `02_Run_Sims.qmd` with the error "cannot add
 bindings to a locked environment". Retain the package versions recorded in
 each rendered report.
 
+### Running with Docker (recommended for reproduction)
+
+A Docker image is provided in the `docker/` folder. It packages R, Quarto, .NET 8 and the
+OSP R packages at fixed versions, eliminating the need for a manual software installation.
+The initial image build requires 15–30 minutes and approximately 1 GB of downloads;
+subsequent runs start immediately.
+
+**Windows (PowerShell or Command Prompt):**
+```powershell
+powershell -ExecutionPolicy Bypass -File docker\pbpk.ps1 apriori
+```
+
+**macOS (Intel and Apple Silicon) and Linux:**
+```bash
+bash docker/pbpk.sh apriori
+```
+
+A successful run ends with:
+
+```
+MATCH: all fold errors reproduce the published results.
+```
+
+See [`docker/README.md`](docker/README.md) for the full command reference, platform notes,
+and pinned software versions.
+
 ### 1. Install PK-Sim and MoBi
 
 This workflow is designed for Windows because the editable OSP Suite projects

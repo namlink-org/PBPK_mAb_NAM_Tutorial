@@ -1,0 +1,20 @@
+# docker-compose.ghcr.yml
+#
+# Override file that pulls the published image from GitHub Container Registry
+# instead of building it locally. Use this after the image has been published.
+#
+# Usage (from the repository root):
+#   docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.ghcr.yml run --rm pbpk apriori
+#
+# Pin by digest for exact reproducibility (recommended):
+#   PBPK_IMAGE=ghcr.io/namlink-org/pbpk-mab-nam@sha256:<digest> \
+#     docker compose -f docker-compose.yml -f docker-compose.ghcr.yml run --rm pbpk apriori
+#
+# The digest for each release is listed in docker/README.md.
+
+services:
+  pbpk:
+    image: ${PBPK_IMAGE:-ghcr.io/namlink-org/pbpk-mab-nam:latest}
+    build:
+      context: docker

@@ -1,0 +1,29 @@
+# docker-compose.yml
+#
+# Defines the PBPK mAb NAM Docker environment as a composable service.
+# The workflow is a one-shot analysis, not a persistent server.
+#
+# Usage (from the repository root):
+#   docker compose run --rm pbpk apriori      # run the full a priori workflow
+#   docker compose run --rm pbpk summary      # accuracy summary
+#   docker compose run --rm pbpk compare      # compare fold errors with published table
+#   docker compose run --rm pbpk sensitivity  # local sensitivity analysis (~15 min)
+#   docker compose run --rm pbpk versions     # print software versions
+#   docker compose run --rm pbpk help         # list all commands
+#
+# Build the image without running:
+#   docker compose build
+#
+# See docker/README.md for the full command reference and platform notes.
+
+name: pbpk-mab-nam
+
+services:
+  pbpk:
+    build:
+      context: docker
+    image: pbpk-mab-nam
+    platform: linux/amd64
+    volumes:
+      - .:/work
+    working_dir: /work
