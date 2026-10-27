@@ -150,6 +150,27 @@ supported:** its API changes stop `02_Run_Sims.qmd` with the error "cannot add
 bindings to a locked environment". Retain the package versions recorded in
 each rendered report.
 
+### Running with Docker (recommended for reproduction)
+
+A Docker image packages the exact software needed to run the a priori workflow
+(Stages 1–3 and 5) with no manual installation of R, Quarto, or the OSP
+packages. On Windows, install [Docker Desktop](https://www.docker.com/products/docker-desktop/),
+then run from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File docker\pbpk.ps1 apriori
+```
+
+The first run builds the image (15–30 minutes, ~1 GB download). Later runs
+start in seconds. The expected final line is:
+
+```
+MATCH: all fold errors reproduce the published results.
+```
+
+See [`docker/README.md`](docker/README.md) for all available commands, macOS/Linux
+usage, and the full list of pinned software versions inside the image.
+
 ### 1. Install PK-Sim and MoBi
 
 This workflow is designed for Windows because the editable OSP Suite projects
