@@ -83,10 +83,25 @@ longer than on Intel hardware; numerical results are identical.
 | `build` | Rebuilds the image explicitly (the launchers rebuild automatically when no image is found) | 15–30 min |
 | `help` | Lists available commands | seconds |
 
+## Docker Compose
+
+A `docker-compose.yml` is provided at the repository root. It defines the same image and
+volume configuration as the launchers and follows the standard `docker compose run` pattern:
+
+```bash
+docker compose run --rm pbpk apriori     # run the a priori workflow
+docker compose run --rm pbpk summary     # accuracy summary
+docker compose run --rm pbpk help        # list all commands
+docker compose build                     # build the image without running
+```
+
+This is equivalent to the launcher scripts and is the preferred entry point for users
+already familiar with Docker Compose.
+
 ## Direct Docker invocation
 
-The launchers (`pbpk.ps1` on Windows, `pbpk.sh` on macOS/Linux) are convenience wrappers.
-The equivalent raw Docker commands are:
+The launchers (`pbpk.ps1` on Windows, `pbpk.sh` on macOS/Linux) and `docker-compose.yml`
+are convenience wrappers. The equivalent raw Docker commands are:
 
 ```bash
 # Build
