@@ -83,6 +83,28 @@ longer than on Intel hardware; numerical results are identical.
 | `build` | Rebuilds the image explicitly (the launchers rebuild automatically when no image is found) | 15–30 min |
 | `help` | Lists available commands | seconds |
 
+## Published image (GitHub Container Registry)
+
+Release images are published to GitHub Container Registry, eliminating the local build step:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml run --rm pbpk apriori
+```
+
+Pin by digest rather than tag for exact reproducibility (tags are mutable; a digest
+identifies one specific set of bits):
+
+| Release | Digest |
+|---|---|
+| v0.3.0 | *to be added on release* |
+
+To verify the digest after pulling:
+
+```bash
+docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/namlink-org/pbpk-mab-nam:v0.3.0
+```
+
 ## Docker Compose
 
 A `docker-compose.yml` is provided at the repository root. It defines the same image and
