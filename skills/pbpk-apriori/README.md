@@ -23,6 +23,21 @@ An assistant operating under this skill can:
 - Re-run the comparison against the published table without re-simulating (`compare`).
 - Execute the optional local sensitivity analysis (`sensitivity`).
 - Report software versions inside the image (`versions`).
+- Answer detailed questions about the eight reference mAbs, their IgG subclasses, and
+  their mechanistic PKML parameter values.
+- Guide users through the full 21-column study-design CSV schema and the administration
+  duration rules that govern infusion time resolution.
+- Explain the distinction between generated and input Excel workbooks and the role of
+  each stage (1–5) in the pipeline.
+- Diagnose common error messages and guide users through fixes (ospsuite version
+  incompatibility, wrong mount, missing Docker Desktop, etc.).
+- Walk a user through adding a new mAb to the dataset following the six-step checklist.
+- Interpret PK endpoint calculations (AUC, CL, Vss, t½) and the fold-error evaluability
+  criteria applied at Stage 3.
+- Clarify the primary vs secondary study-design distinction and the 200-checkpoint
+  sensitivity structure.
+- Describe software licensing for code (MIT), data/docs (CC BY 4.0) and OSP packages
+  (GPL-2.0).
 
 The skill explicitly prohibits the assistant from inventing or modifying biological
 parameters, editing data or model files without direct instruction, or reporting a
@@ -61,13 +76,13 @@ requires no additional context.
 
 ## Scope
 
-This skill covers the a priori workflow (`02_APriori_PBPK_Workflow`, Stages 1–3 and 5)
-only. The following are outside its scope:
+This skill covers the a priori workflow (`02_APriori_PBPK_Workflow`, Stages 1–5), the
+eight reference mAbs, the study-design CSV schema, and the Docker environment. The
+following are outside its scope:
 
-- Applying the workflow to a new antibody or target (see the repository README section
-  "Applying the workflow to another mAb").
-- The study-design workflow (`03_Study_Simulations`), which has not been validated in the
-  Docker environment.
+- The study-design simulation workflow (`03_Study_Simulations`, Stages 6–8), which is not
+  available as a Docker command and has not been validated in the containerised environment.
+- Modifying or extending the underlying PK-Sim/MoBi models directly.
 
 ## Contents
 
