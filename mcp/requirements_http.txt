@@ -1,0 +1,13 @@
+# HTTP + MCP server (mcp/server_http.py). Tested with fastmcp 4.2 and mcp 2.3.
+# Upper bounds make a major-version bump a deliberate change.
+fastmcp>=4.2,<5
+mcp>=2.3,<3
+mcp-types>=2.3,<3
+fastapi>=0.100.0,<1
+uvicorn[standard]>=0.20.0,<1
+httpx2>=2.12,<3
+
+# Not imported directly, but active by effect: uvicorn uses uvloop when present
+# (not available on Windows), and pydantic-settings reads .env files with python-dotenv.
+python-dotenv>=1.2,<2
+uvloop>=0.22,<1; sys_platform != "win32"

@@ -2,15 +2,15 @@
 name: pbpk-apriori
 description: >
   Answer questions about, run, troubleshoot, and adapt the PBPK mAb NAM tutorial
-  repository. Covers the a priori workflow (Stages 1–5, Docker commands), study
-  design reanalysis (Stages 6–8, pre-computed CSVs), fold-error interpretation,
+  repository. Covers the a priori workflow (Stages 1-5, Docker commands), study
+  design reanalysis (Stages 6-8, pre-computed CSVs), fold-error interpretation,
   data schemas, PKML entity paths, molecule-level details, error messages,
   output file formats, adding a new mAb, and licence implications. Use when asked
   to run simulations, check accuracy, answer study-design questions, interpret
   outputs, troubleshoot errors, or adapt the workflow to a new antibody.
 ---
 
-# PBPK mAb NAM Tutorial — skill
+# PBPK mAb NAM Tutorial: skill
 
 ## 1. Repository purpose and two-objective structure
 
@@ -23,7 +23,7 @@ background who need a reproducible, open reference for large-molecule PBPK.
 The repository has **two separate objectives** with independent folder trees and
 stage numbering. Never conflate them.
 
-**Objective 1 — A priori PBPK predictions** (`02_APriori_PBPK_Workflow/`)  
+**Objective 1 - A priori PBPK predictions** (`02_APriori_PBPK_Workflow/`)  
 Can a PBPK model predict monkey and human mAb PK from in-vitro lab measurements
 alone, before any in-vivo data? Tested retrospectively on 8 approved mAbs
 across 5 targets.
@@ -40,10 +40,10 @@ The Docker `apriori` command runs Stages 1, 2, 3, and 5 in sequence.
 Stage 4 runs separately via the `sensitivity` command.
 **Stages 6, 7, and 8 are not available as Docker commands.**
 
-**Objective 2 — Study design reanalysis** (`03_Study_Simulations/`)  
+**Objective 2 - Study design reanalysis** (`03_Study_Simulations/`)  
 If a monkey study is still required, how small can it be? 100,000 virtual
 profiles were simulated across group sizes, doses, and variability scenarios.
-Results are pre-computed and committed; Stages 6–8 do not need to be re-run.
+Results are pre-computed and committed; Stages 6-8 do not need to be re-run.
 
 | Stage | Script | What it does |
 |---|---|---|
@@ -69,7 +69,7 @@ questions about specific molecules or comparing targets.
 | Golimumab | TNF-α | Human IgG1 | Monkey, Human |
 | Bevacizumab | VEGF-A | Humanized IgG1 | Monkey, Human |
 
-The study design reanalysis (Stages 6–8) covers **Golimumab** (uncalibrated,
+The study design reanalysis (Stages 6-8) covers **Golimumab** (uncalibrated,
 nominal a priori model) and **Nivolumab** (calibrated: a priori Anti-PD1
 structure with FcRn Kd set to 0.39 µmol/L) only. No uncalibrated Nivolumab
 arm is simulated.
@@ -78,7 +78,7 @@ arm is simulated.
 
 ## 3. TMDD model structure
 
-The models use **full TMDD with an explicit drug–target complex compartment**
+The models use **full TMDD with an explicit drug-target complex compartment**
 built in MoBi (`.mbp3`), exported as compiled PKML files (`.pkml`). The
 MoBi project adds generic target-mediated drug disposition reactions to the
 PK-Sim large-molecule PBPK scaffold. The six mechanistic inputs drive:
@@ -89,12 +89,12 @@ PK-Sim large-molecule PBPK scaffold. The six mechanistic inputs drive:
 - Target turnover (target degradation rate kdeg)
 - Target exposure level (target reference concentration)
 
-Do not suggest Michaelis-Menten or quasi-steady-state TMDD approximations —
+Do not suggest Michaelis-Menten or quasi-steady-state TMDD approximations -
 the full model is implemented and the simplifications are not used here.
 
 ---
 
-## 4. The six mechanistic inputs — units and sources
+## 4. The six mechanistic inputs: units and sources
 
 | Input | PKML entity name | Units | Typical source |
 |---|---|---|---|
@@ -164,7 +164,7 @@ guessing for an unrecognised Route string; only IV records are included.
 | Species | Condition | Assigned duration |
 |---|---|---|
 | Monkey | Any Route starting with `"iv"` (case-insensitive) (e.g. `"IV"`, `"IV Bolus"`) | 1 minute (bolus approximation) |
-| Human | `molecule == "Adalimumab"` (any Route string) | 30 minutes — **molecule-specific rule, evaluated first** |
+| Human | `molecule == "Adalimumab"` (any Route string) | 30 minutes - **molecule-specific rule, evaluated first** |
 | Human | Route contains `"30min"` or `"30 min"` (regex `30\s*min`) | 30 minutes |
 | Human | Route contains `"1hr"`, `"1 hr"`, `"1hour"`, or `"1 hour"` (regex `1\s*hr\|1\s*hour`) | 60 minutes |
 | Human | Route contains `"2hr"`, `"2 hr"`, `"2hour"`, or `"2 hour"` (regex `2\s*hr\|2\s*hour`) | 120 minutes |
@@ -177,7 +177,7 @@ human mAb must embed the infusion duration in the Route string. A plain human `"
 `"IV Infusion"` Route for any molecule other than Adalimumab will stop the pipeline.
 
 **Actual Route formats used in the committed data files:**
-- Monkey: `"IV"`, `"IV Bolus"` — both match `^iv`.
+- Monkey: `"IV"`, `"IV Bolus"` - both match `^iv`.
 - Human Pembrolizumab: `"IV 30min Infusion"` → 30 min.
 - Human Nivolumab: `"IV 1hr Infusion"` → 60 min.
 - Human Golimumab: `"IV 2hr Infusion"` → 120 min.
@@ -189,7 +189,7 @@ string, or add a molecule-specific rule to `resolve_infusion_minutes()` in
 
 ---
 
-## 7. Configuration workbooks — generated vs inputs
+## 7. Configuration workbooks: generated vs inputs
 
 Stage 1 **overwrites** three generated workbooks. Stage 1 is expected to
 replace them; do not edit them manually, as your changes will be lost on the
@@ -214,7 +214,7 @@ the workbook in Excel and rerun.
 | Component | Pinned version in Docker | Required for reproduction |
 |---|---|---|
 | R | 4.5.1 | Scripts also verified with 4.6.1 |
-| ospsuite | 12.4.2 | **12.4.x only — ospsuite 13 not supported** |
+| ospsuite | 12.4.2 | **12.4.x only - ospsuite 13 not supported** |
 | esqlabsR | 5.6.0 | 5.6.0 or later within 5.x |
 | rSharp | 1.2.3 | |
 | Quarto | (conda-forge pinned) | |
@@ -248,7 +248,7 @@ The Docker image pins 12.4.2 and is not affected by this issue.
 - **Do not send** confidential or proprietary molecule information to any
   service the user has not approved.
 - **For a study-design question**, read the relevant pre-computed CSV directly.
-  Do not attempt to re-run Stages 6–8.
+  Do not attempt to re-run Stages 6-8.
 
 ---
 
@@ -266,7 +266,7 @@ The Docker image pins 12.4.2 and is not affected by this issue.
 
 ---
 
-## 11. Running the a priori workflow (Stages 1–5)
+## 11. Running the a priori workflow (Stages 1-5)
 
 ### Commands
 
@@ -275,12 +275,12 @@ The Docker image pins 12.4.2 and is not affected by this issue.
 | `apriori` | Stages 1 → 2 → 3 → 5; stops at first failure; refuses to reuse an old run; compares fold errors | ~6 min |
 | `summary` | Within-2-fold counts by species and endpoint | seconds |
 | `compare` | Compare current table with committed table only; no re-simulation | seconds |
-| `sensitivity` | Stage 4 — one-way local sensitivity | ~15 min |
+| `sensitivity` | Stage 4 - one-way local sensitivity | ~15 min |
 | `versions` | R, Quarto, rSharp, ospsuite, esqlabsR, .NET versions inside the image | seconds |
-| `build` | Rebuild the Docker image explicitly | 15–30 min |
+| `build` | Rebuild the Docker image explicitly | 15-30 min |
 | `help` | List all commands | seconds |
 
-### How to run — by platform
+### How to run: by platform
 
 **Windows (PowerShell or Command Prompt):**
 ```
@@ -297,7 +297,7 @@ bash docker/pbpk.sh <command>
 docker compose run --rm pbpk <command>
 ```
 
-**Direct Docker — use this if the launchers are blocked by your environment:**
+**Direct Docker - use this if the launchers are blocked by your environment:**
 ```
 docker run --rm --platform linux/amd64 -v "${PWD}:/work" pbpk-mab-nam <command>
 ```
@@ -311,8 +311,8 @@ docker build --platform linux/amd64 -t pbpk-mab-nam docker
 
 ### First run
 
-The first run downloads ~1 GB and builds the image (15–30 minutes).
-The line `==> Building the 'pbpk-mab-nam' image` is expected — do not interrupt.
+The first run downloads ~1 GB and builds the image (15-30 minutes).
+The line `==> Building the 'pbpk-mab-nam' image` is expected - do not interrupt.
 Apple Silicon Macs (M1/M2/M3/M4) run via Rosetta 2; launchers pass
 `--platform linux/amd64` automatically. Subsequent runs start in seconds.
 
@@ -320,8 +320,8 @@ Apple Silicon Macs (M1/M2/M3/M4) run via Rosetta 2; launchers pass
 
 1. Run `versions` to confirm the environment is correct.
 2. Run `apriori`. Do not interrupt. Expected duration ~6 minutes.
-3. If it prints `MATCH` — run `summary` and report the accuracy table.
-4. If it prints `DIFFERENT` or `STOPPED` — quote the exact output and the log
+3. If it prints `MATCH` - run `summary` and report the accuracy table.
+4. If it prints `DIFFERENT` or `STOPPED` - quote the exact output and the log
    path under `_pbpk_logs/`. Do not attempt to fix scientific inputs.
 5. After a successful `apriori` run, outputs are:
    - Main report: `02_APriori_PBPK_Workflow/Scripts/03_Process_Sims_Outputs.html`
@@ -345,7 +345,7 @@ introduced only after simulations are complete (Stage 3 only).
 | **AUC0-tlast** | Linear-up / log-down trapezoidal rule applied to both predicted and observed profiles at the same observed sampling times |
 | **AUCinf** | AUClast + Clast / λz (terminal elimination rate constant) |
 | **Clearance** | Dose / AUCinf; units are L/day/kg because dose is in mg/kg |
-| **Fold error** | Predicted / Observed (not the inverse). Range 0.5–2.0 = within 2-fold |
+| **Fold error** | Predicted / Observed (not the inverse). Range 0.5-2.0 = within 2-fold |
 | **Percent extrapolated** | 100 × (AUCinf − AUClast) / AUCinf |
 
 **Evaluability rules:**
@@ -367,16 +367,27 @@ introduced only after simulations are complete (Stage 3 only).
 The `summary` command (and `compare`) uses this logic:
 - Fold error = predicted / observed
 - Within 2-fold: 0.5 ≤ fold error ≤ 2.0
-- Reports N evaluated, N within 2-fold, and percentage — by species (Monkey,
+- Reports N evaluated, N within 2-fold, and percentage - by species (Monkey,
   Human) and endpoint (AUC0-tlast, Cmax, Clearance)
-- The published result is MATCH on all 132 evaluated scenario-endpoints
+
+**Published result:** the fold-error table contains **132 rows** total:
+- **109 Evaluated** (AUC, Cmax, and Clearance rows where percent AUCinf
+  extrapolated ≤ 20%)
+- **23 Not evaluable** (Clearance rows where percent AUCinf extrapolated > 20%)
+
+Of the 109 evaluated rows, **96 are within 2-fold** (88 %).
+
+`MATCH` means the current run reproduced all 132 fold-error values exactly
+against the committed published table - it does **not** mean all 132 are within
+2-fold. The 23 Not evaluable rows have no fold error (NA in the table) and are
+excluded from accuracy counts.
 
 ---
 
 ## 14. Local sensitivity analysis (Stage 4)
 
 Stage 4 is a **local one-way sensitivity analysis**, not parameter fitting,
-not a global uncertainty analysis, and not a dose–response model:
+not a global uncertainty analysis, and not a dose-response model:
 
 - **Parameters varied:** target reference concentration, kint, kdeg
 - **Range:** 0.1× and 10× the a priori (central) value, one parameter at a time
@@ -389,7 +400,7 @@ analysis. The analysis does not use observed data and does not fit anything.
 
 ---
 
-## 15. Stage 5 — tornado plot
+## 15. Stage 5: tornado plot
 
 Stage 5 reads the scenario-level table embedded in the Stage 3 HTML report.
 It does **not** re-run simulations or recalculate PK endpoints. Outputs:
@@ -416,7 +427,7 @@ It does **not** re-run simulations or recalculate PK endpoints. Outputs:
 
 ---
 
-## 17. Output files — complete reference
+## 17. Output files: complete reference
 
 ### Stage 1 outputs
 | File | Notes |
@@ -468,7 +479,7 @@ It does **not** re-run simulations or recalculate PK endpoints. Outputs:
 
 ---
 
-## 18. Study design questions (Stages 6–8) — pre-computed results
+## 18. Study design questions (Stages 6-8): pre-computed results
 
 **Do not attempt to re-run Stages 6, 7, or 8.** Stage 7 takes several hours
 and is not available as a Docker command. All results are already committed.
@@ -483,7 +494,7 @@ and is not available as a Docker command. All results are already committed.
 - Endpoints: AUC0-28d, Cmax, Terminal clearance
 - 100 replicates per molecule and variability scenario; 50 monkeys per replicate
 
-### Primary vs secondary fold-error reference — critical distinction
+### Primary vs secondary fold-error reference: critical distinction
 
 | Reference type | Definition | File |
 |---|---|---|
@@ -501,14 +512,14 @@ and QC table.
 
 ### How to answer a study design question
 
-1. Read the relevant CSV directly — do not run any simulation.
+1. Read the relevant CSV directly - do not run any simulation.
 2. Filter by molecule, dose (Dose_mg_kg), design, and N_per_group.
 3. Report `Fraction_within_2fold` from `study_design_overall_success.csv`.
 4. By endpoint: use `study_design_endpoint_success.csv`.
 5. By dose fold error: use `study_design_fold_error_summary.csv`.
 6. Always state that results are conditional on the Golimumab and Nivolumab
-   truth models, the configured variability assumptions, and the 0.5–2-fold
-   criterion as a tutorial threshold — not a universal design standard.
+   truth models, the configured variability assumptions, and the 0.5-2-fold
+   criterion as a tutorial threshold - not a universal design standard.
 
 ### Example
 
@@ -523,11 +534,11 @@ If Stage 7 was interrupted: rerender `Step2_Run_Study_Design_Simulations.qmd`.
 Valid checkpoints are reused automatically based on the saved Step 1 input
 checksum. Set `STUDY_DESIGN_FORCE_RERUN=true` **only** for a deliberate full
 recomputation. Incompatible inputs (changed Step 1 outputs) cannot be silently
-mixed with an earlier run — the checksum check prevents this.
+mixed with an earlier run - the checksum check prevents this.
 
 ---
 
-## 19. Applying the workflow to a new mAb — step-by-step
+## 19. Applying the workflow to a new mAb: step-by-step
 
 An AI assistant may walk through this checklist with the user. The user
 retains scientific responsibility for every value and decision.
@@ -554,7 +565,7 @@ retains scientific responsibility for every value and decision.
    - Confirm Molecular.Weight is in g/mol and matches the Parameters workbook
 
 5. **Add the new PKML file(s)** to the appropriate subfolder under `01_Models/`.
-   Do not rename existing PKML entity names — any rename must also update every
+   Do not rename existing PKML entity names - any rename must also update every
    R script that references that entity path.
 
 6. **Update `ProjectConfiguration.xlsx`** to include the new molecule's PKML

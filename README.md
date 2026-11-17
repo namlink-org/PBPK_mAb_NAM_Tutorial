@@ -1,4 +1,28 @@
+<div align="center">
+
 # PBPK mAb NAM Tutorial
+
+**A priori PBPK predictions for monoclonal antibodies, and model-based reduction of monkey PK studies.**
+
+[![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=flat&logo=docker&logoColor=white)](docker/README.md)
+[![R](https://img.shields.io/badge/r-%23276DC3.svg?style=flat&logo=r&logoColor=white)](https://www.r-project.org/)
+[![Quarto](https://img.shields.io/badge/quarto-%2339729E.svg?style=flat&logo=quarto&logoColor=white)](https://quarto.org/)
+[![OSP Suite](https://img.shields.io/badge/OSP%20Suite-PK--Sim%20%7C%20MoBi-0F4C81.svg?style=flat)](https://www.open-systems-pharmacology.org/)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg?style=flat&logo=python&logoColor=white)](mcp/README.md)
+[![MCP](https://img.shields.io/badge/MCP-server-6E56CF.svg?style=flat)](mcp/README.md)
+<br>
+[![Tests](https://github.com/namlink-org/PBPK_mAb_NAM_Tutorial/actions/workflows/ci.yml/badge.svg)](https://github.com/namlink-org/PBPK_mAb_NAM_Tutorial/actions/workflows/ci.yml)
+[![Code: MIT](https://img.shields.io/badge/code-MIT-blue.svg?style=flat)](LICENSE)
+[![Data: CC BY 4.0](https://img.shields.io/badge/data-CC%20BY%204.0-lightgrey.svg?style=flat)](https://creativecommons.org/licenses/by/4.0/)
+[![NAMLink](https://img.shields.io/badge/NAMLink-namlink.org-1F6F5C.svg?style=flat)](https://namlink.org/)
+
+[Quick start](#-quick-start) · [Key results](#-key-results) · [Ways to use](#-ways-to-use-this-repository) · [Full analysis](#-run-the-complete-analysis) · [Citation](#-citation)
+
+</div>
+
+---
+
+## 🧬 Overview
 
 This repository contains an end-to-end tutorial for using physiologically based
 pharmacokinetic (PBPK) models to predict monoclonal antibody (mAb)
@@ -20,25 +44,108 @@ The study-design reanalysis then uses Golimumab and Nivolumab truth models to
 show how between-monkey variability and uncertainty in mechanistic inputs affect
 the performance of candidate reduced-study designs.
 
-Observed concentration data are not used to fit or calibrate the a priori PBPK
-models. They are used retrospectively to define the evaluated dose scenarios
-and to compare predictions with observations after simulations have been
-completed. The study-design analysis is model-conditional: its true simulations
-use the nominal, uncalibrated Golimumab model and the calibrated Nivolumab model.
-The Nivolumab model retains the a priori Anti-PD1 structure but uses an FcRn
-binding-affinity center of 0.39 micromol/L. Uncalibrated Nivolumab is not
-simulated in this exercise.
+> [!NOTE]
+> Observed concentration data are not used to fit or calibrate the a priori PBPK
+> models. They are used retrospectively to define the evaluated dose scenarios
+> and to compare predictions with observations after simulations have been
+> completed. The study-design analysis is model-conditional: its true simulations
+> use the nominal, uncalibrated Golimumab model and the calibrated Nivolumab model.
+> The Nivolumab model retains the a priori Anti-PD1 structure but uses an FcRn
+> binding-affinity center of 0.39 micromol/L. Uncalibrated Nivolumab is not
+> simulated in this exercise.
 
-## Workflow at a glance
+---
 
-The repository implements the following stages:
+## 🚀 Quick start
+
+The fastest way to reproduce the a priori results is the Docker image. It
+packages R, Quarto, .NET 8 and the OSP R packages at fixed versions, so no
+manual software installation is needed.
+
+**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (running) and Git.
+
+```bash
+git clone https://github.com/namlink-org/PBPK_mAb_NAM_Tutorial.git
+cd PBPK_mAb_NAM_Tutorial
+```
+
+**Windows (PowerShell or Command Prompt):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File docker\pbpk.ps1 apriori
+```
+
+**macOS (Intel and Apple Silicon) and Linux:**
+
+```bash
+bash docker/pbpk.sh apriori
+```
+
+A successful run ends with:
+
+```text
+MATCH: all fold errors reproduce the published results.
+```
+
+The initial image build requires 15-30 minutes and approximately 1 GB of
+downloads; subsequent runs start immediately. See
+[`docker/README.md`](docker/README.md) for the full command reference
+(`sensitivity`, `compare`, `summary`, `versions`), platform notes and pinned
+software versions.
+
+---
+
+## 📊 Key results
+
+A priori predictions (no in vivo PK used for calibration) for eight IV mAbs,
+from `02_APriori_PBPK_Workflow/SimsOutputs/Tables/Supplement_Fold_Error_Tornado_Data.csv`.
+Fold error = predicted / observed; within 2-fold = 0.5 to 2.0.
+
+| Species | Endpoint | Evaluated | Within 2-fold |
+|---|---|---:|---:|
+| Monkey | Cmax | 14 | 13 (93%) |
+| Monkey | AUC0-tlast | 14 | 12 (86%) |
+| Monkey | Clearance | 6 | 3 (50%) |
+| Human | Cmax | 30 | 29 (97%) |
+| Human | AUC0-tlast | 30 | 29 (97%) |
+| Human | Clearance | 15 | 10 (67%) |
+| **All** | | **109** | **96 (88%)** |
+
+The table has 132 rows; 23 clearance rows are not evaluable because more than
+20% of the observed AUCinf was extrapolated. Clearance is the weakest
+endpoint. The study-design results are summarised under
+[`03_Study_Simulations`](#03_study_simulations).
+
+---
+
+## 🧭 Ways to use this repository
+
+| You want to | Use |
+|---|---|
+| Read the results without installing anything | The rendered HTML reports in each `Scripts/` folder |
+| Reproduce the a priori results with one command | [Docker](docker/README.md), ends with `MATCH` |
+| Inspect or edit the models | PK-Sim/MoBi projects in [`01_Models`](01_Models/README.qmd) |
+| Query the results or run the pipeline from an AI assistant | The [MCP server](mcp/README.md) (`.mcp.json` at the repository root) or the [agent skill](skills/pbpk-apriori/README.md) |
+
+---
+
+## 🔬 Workflow at a glance
+
+```text
+ 00_Data                 01_Models                     02_APriori_PBPK_Workflow          03_Study_Simulations
+ observed PK +    ──▶    PK-Sim + MoBi TMDD     ──▶    Stage 1  configure          ──▶   Stage 6  inputs and populations
+ six mechanistic         compiled .pkml files          Stage 2  simulate                 Stage 7  truth simulations
+ inputs per mAb                                        Stage 3  evaluate (fold error)    Stage 8  candidate designs
+                                                       Stage 4  sensitivity (optional)
+                                                       Stage 5  tornado plot (optional)
+```
 
 1. Collect and format observed PK data and molecule- and target-specific
    mechanistic inputs.
 2. Build species- and target-specific large-molecule PBPK models in PK-Sim,
    add target-mediated drug disposition (TMDD) reactions in MoBi, and export
    compiled PKML simulations.
-3. Use R to configure and run a priori monkey and human predictions
+3. Use R to configure and run a priori monkey and human predictions.
 4. Compare the saved predictions with observed PK data.
 5. Cross between-monkey variability in body weight and target reference
    concentration with replicate-level uncertainty in five shared mechanistic
@@ -46,7 +153,9 @@ The repository implements the following stages:
    replicate-matched dense truth and a separate nominal typical-subject
    reference.
 
-## Repository organization
+---
+
+## 📁 Repository organization
 
 ```text
 PBPK_mAb_NAM_Tutorial/
@@ -65,6 +174,9 @@ PBPK_mAb_NAM_Tutorial/
 |-- 03_Study_Simulations/
 |   |-- Scripts/                 Three-step monkey study-design reanalysis
 |   `-- SimsOutputs/             Checkpoints, profiles, tables, and figures
+|-- docker/                      Pinned Docker environment and launchers
+|-- mcp/                         MCP server and HTTP API for AI assistants
+|-- skills/                      Agent skill for the a priori workflow
 `-- README.md                    This master guide
 ```
 
@@ -128,7 +240,10 @@ doses for those monkeys remain in the analysis. These findings are conditional
 on the configured truth models and simulation assumptions and should not be
 generalized as universal study-design performance.
 
-## Software and installation
+
+---
+
+## 🛠️ Software and installation
 
 The bundled reports and results were generated with the following versions
 (as recorded in each rendered report):
@@ -150,31 +265,12 @@ supported:** its API changes stop `02_Run_Sims.qmd` with the error "cannot add
 bindings to a locked environment". Retain the package versions recorded in
 each rendered report.
 
-### Running with Docker (recommended for reproduction)
+For reproduction, the [Docker image](#-quick-start) is the recommended route.
+The steps below set up a native Windows installation, which is needed to edit
+the PK-Sim/MoBi projects or to run the study-design stages (6-8).
 
-A Docker image is provided in the `docker/` folder. It packages R, Quarto, .NET 8 and the
-OSP R packages at fixed versions, eliminating the need for a manual software installation.
-The initial image build requires 15–30 minutes and approximately 1 GB of downloads;
-subsequent runs start immediately.
-
-**Windows (PowerShell or Command Prompt):**
-```powershell
-powershell -ExecutionPolicy Bypass -File docker\pbpk.ps1 apriori
-```
-
-**macOS (Intel and Apple Silicon) and Linux:**
-```bash
-bash docker/pbpk.sh apriori
-```
-
-A successful run ends with:
-
-```
-MATCH: all fold errors reproduce the published results.
-```
-
-See [`docker/README.md`](docker/README.md) for the full command reference, platform notes,
-and pinned software versions.
+<details>
+<summary><b>Native installation on Windows (PK-Sim, MoBi, R, Quarto)</b></summary>
 
 ### 1. Install PK-Sim and MoBi
 
@@ -275,7 +371,12 @@ are read and written with `openxlsx`. Excel is useful for inspecting the
 configurations, but any generated workbook must be closed before it is
 overwritten.
 
-## Model inputs and the PKML hand-off
+
+</details>
+
+---
+
+## ⚙️ Model inputs and the PKML hand-off
 
 Each molecule-species combination requires six mechanistic inputs. The entity
 names and units below must remain aligned between the input workbooks, the
@@ -304,7 +405,9 @@ without making the matching changes in the R scripts. A PKML file may still
 open after a rename while the programmatic hand-off fails because the scripts
 look up these entities by exact path.
 
-## Run the complete analysis
+---
+
+## 🧪 Run the complete analysis
 
 Run the commands from the repository root. The scripts can also locate the
 project from a subfolder, but the folder names `00_Data`, `01_Models`,
@@ -484,7 +587,7 @@ universal decision threshold. Results are conditional on the truth models,
 input distributions, population, dose grid, sampling schedule, and endpoint
 rules used here.
 
-## Minimal reproduction command sequence
+### Minimal reproduction command sequence
 
 With the supplied PKML models and prepared data, the core end-to-end analysis is:
 
@@ -500,7 +603,10 @@ quarto render ".\03_Study_Simulations\Scripts\Step3_Postprocess_Study_Design_Res
 Add the two optional `02_APriori_PBPK_Workflow` scripts when reproducing the
 local-sensitivity and supplementary tornado-plot analyses.
 
-## Reproducibility and quality checks
+
+---
+
+## ✅ Reproducibility and quality checks
 
 - Every Quarto file contains its own purpose, inputs, outputs, validation
   checks, and interpretation notes; the reports embed figures and session
@@ -518,7 +624,9 @@ local-sensitivity and supplementary tornado-plot analyses.
 - Review warnings, failed-profile logs, inventory tables, and package versions
   before interpreting any result.
 
-## Troubleshooting
+---
+
+## 🩺 Troubleshooting
 
 ### Project root not found
 
@@ -561,7 +669,9 @@ for `rSharp`, and the system locale guidance in the official OSP package
 documentation. Run the small package-loading check before starting the full
 simulation workflow.
 
-## Applying the workflow to another mAb
+---
+
+## 🧩 Applying the workflow to another mAb
 
 The following items must be supplied or reviewed explicitly:
 
@@ -616,7 +726,15 @@ decision criteria. Ask for a traceable change plan and validation report in
 addition to code changes. This keeps the LLM focused on reproducible adaptation
 instead of unsupported scientific inference.
 
-## License
+
+---
+
+## 📖 Citation
+
+Use the **Cite this repository** button on GitHub (generated from
+[`CITATION.cff`](CITATION.cff)), and cite the accompanying publication.
+
+## ⚖️ License
 
 - **Code** (R and Quarto scripts, configuration helpers): [MIT License](LICENSE).
 - **Data, models, documentation and figures** (`00_Data/`, `01_Models/`,

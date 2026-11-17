@@ -1,0 +1,2 @@
+# stdio MCP server (mcp/server.py). Tested with mcp 2.3.
+mcp>=2.3,<3

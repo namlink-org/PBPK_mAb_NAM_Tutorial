@@ -31,3 +31,6 @@
 
 # Logs written by the Docker runner (docker/run_pipeline.sh).
 _pbpk_logs/
+
+# Python bytecode from the MCP server.
+__pycache__/

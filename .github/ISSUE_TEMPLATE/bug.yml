@@ -1,0 +1,22 @@
+name: Bug or documentation error
+description: Something in the scripts, Docker image, MCP server or documentation is wrong.
+labels: [bug]
+body:
+  - type: input
+    id: where
+    attributes:
+      label: File or component
+      placeholder: "e.g. 03_Process_Sims_Outputs.qmd, docker/pbpk.sh, mcp/server_http.py, README"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What is wrong, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      render: text

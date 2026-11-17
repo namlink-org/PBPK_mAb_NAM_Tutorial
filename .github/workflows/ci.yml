@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp:
+    name: MCP servers (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    env:
+      PBPK_SKIP_DOCKER: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r mcp/requirements.txt -r mcp/requirements_http.txt
+      - name: Tool logic against the committed result tables
+        run: python mcp/test_tools.py
+      - name: stdio server over the MCP protocol
+        run: python mcp/test_stdio_mcp.py
+      - name: HTTP server end to end (OAuth, both protocol generations, REST, concurrency)
+        run: python mcp/test_http_mcp.py
+
+  citation:
+    name: Validate CITATION.cff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install cffconvert==2.0.0
+      - run: cffconvert --validate

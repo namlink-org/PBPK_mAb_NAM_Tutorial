@@ -1,7 +1,7 @@
 # Docker environment
 
 The `docker/` folder provides a containerised environment for the a priori PBPK workflow
-(`02_APriori_PBPK_Workflow`, Stages 1–5). The image bundles R, Quarto, .NET 8 and
+(`02_APriori_PBPK_Workflow`, Stages 1-5). The image bundles R, Quarto, .NET 8 and
 the Open Systems Pharmacology R packages at fixed versions, eliminating the need for a
 manual software installation. The repository itself is mounted into the container at
 `/work` at runtime; all reports and results are written back to the host folder.
@@ -43,7 +43,7 @@ powershell -ExecutionPolicy Bypass -File docker\pbpk.ps1 apriori
 ```
 
 The same command works from Command Prompt. The first execution builds the image
-(15–30 minutes, approximately 1 GB download); subsequent runs start immediately.
+(15-30 minutes, approximately 1 GB download); subsequent runs start immediately.
 
 A successful run ends with:
 
@@ -57,7 +57,7 @@ MATCH: all fold errors reproduce the published results.
 bash docker/pbpk.sh apriori
 ```
 
-The first execution builds the image (15–30 minutes, approximately 1 GB download);
+The first execution builds the image (15-30 minutes, approximately 1 GB download);
 subsequent runs start immediately.
 
 A successful run ends with:
@@ -80,7 +80,7 @@ longer than on Intel hardware; numerical results are identical.
 | `compare` | Compares the current fold-error table against the committed table without re-running simulations | seconds |
 | `sensitivity` | Runs Stage 4 (local sensitivity analysis) | 15 min |
 | `versions` | Prints R, Quarto, rSharp, ospsuite, esqlabsR and .NET versions inside the image | seconds |
-| `build` | Rebuilds the image explicitly (the launchers rebuild automatically when no image is found) | 15–30 min |
+| `build` | Rebuilds the image explicitly (the launchers rebuild automatically when no image is found) | 15-30 min |
 | `help` | Lists available commands | seconds |
 
 ## Published image (GitHub Container Registry)
@@ -131,11 +131,11 @@ docker run --rm --platform linux/amd64 -v "$PWD:/work"  pbpk-mab-nam apriori   #
 
 An `apriori` run rewrites the following tracked files:
 
-- `02_APriori_PBPK_Workflow/Configurations/` — three configuration workbooks
-- `02_APriori_PBPK_Workflow/Scripts/03_Process_Sims_Outputs.html` — main evaluation report
-- `02_APriori_PBPK_Workflow/SimsOutputs/Figures/` — tornado figure
-- `02_APriori_PBPK_Workflow/SimsOutputs/Tables/` — fold-error table
-- `02_APriori_PBPK_Workflow/SimsOutputs/latest_simulation_run.txt` — pointer to the active run
+- `02_APriori_PBPK_Workflow/Configurations/` - three configuration workbooks
+- `02_APriori_PBPK_Workflow/Scripts/03_Process_Sims_Outputs.html` - main evaluation report
+- `02_APriori_PBPK_Workflow/SimsOutputs/Figures/` - tornado figure
+- `02_APriori_PBPK_Workflow/SimsOutputs/Tables/` - fold-error table
+- `02_APriori_PBPK_Workflow/SimsOutputs/latest_simulation_run.txt` - pointer to the active run
 
 It also creates a new timestamped folder under
 `02_APriori_PBPK_Workflow/SimsOutputs/SimulationResults/` and writes logs to `_pbpk_logs/`
@@ -148,7 +148,7 @@ git checkout -- .
 
 ## Limitations
 
-- The image covers the a priori workflow only (Stages 1–5). Stages 6, 7 and 8
+- The image covers the a priori workflow only (Stages 1-5). Stages 6, 7 and 8
   (`03_Study_Simulations`) use the same packages but simulate approximately 100,000 profiles
   and take several hours; they have not been validated in this environment and are not
   available as Docker commands.

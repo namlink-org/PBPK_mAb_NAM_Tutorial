@@ -1,0 +1,45 @@
+name: Apply the workflow to another mAb
+description: Ask about adapting the models and scripts to a new antibody or target.
+labels: [new-mab]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read "Applying the workflow to another mAb" in the README first. Do not post confidential or proprietary molecule information here.
+  - type: input
+    id: molecule
+    attributes:
+      label: Antibody, target and IgG subclass
+      placeholder: "e.g. public mAb X, anti-IL-17A, human IgG1"
+    validations:
+      required: true
+  - type: checkboxes
+    id: species
+    attributes:
+      label: Species
+      options:
+        - label: Monkey
+        - label: Human
+  - type: dropdown
+    id: model
+    attributes:
+      label: Is the target one of the supplied model targets (IL-6R, PD-1, PD-L1, TNFA, VEGFA)?
+      options:
+        - "Yes, same target"
+        - "No, new target (new PK-Sim/MoBi model needed)"
+    validations:
+      required: true
+  - type: textarea
+    id: inputs
+    attributes:
+      label: Mechanistic inputs you have
+      description: Which of the six inputs (FcRn affinity, target Kd, koff, kint, kdeg, target reference concentration) you have, with units and sources.
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question or context of use
+      description: What decision should the prediction support (e.g. first-in-monkey dose selection, reduced study design)?
+    validations:
+      required: true

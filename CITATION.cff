@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: >-
+  If you use this workflow, its data or its models, please cite this
+  repository and the accompanying publication. Also cite the original
+  studies for the observed concentration data listed in 00_Data.
+title: "PBPK mAb NAM Tutorial"
+abstract: >-
+  End-to-end tutorial for a priori physiologically based pharmacokinetic
+  (PBPK) prediction of monoclonal antibody pharmacokinetics in monkey and
+  human with PK-Sim/MoBi and R, evaluated retrospectively on eight IV mAbs,
+  plus a simulation-based reanalysis of reduced monkey PK study designs.
+type: software
+authors:
+  - name: "NAMLink (namlink-org) contributors"
+repository-code: "https://github.com/namlink-org/PBPK_mAb_NAM_Tutorial"
+url: "https://namlink.org"
+license: MIT
+keywords:
+  - PBPK
+  - monoclonal antibodies
+  - pharmacokinetics
+  - new approach methodologies
+  - PK-Sim
+  - MoBi
+  - ospsuite
+  - target-mediated drug disposition
+  - study design
+  - 3Rs

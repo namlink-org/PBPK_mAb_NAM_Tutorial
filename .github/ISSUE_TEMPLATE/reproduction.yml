@@ -1,0 +1,44 @@
+name: Reproduction did not match
+description: The workflow ran but did not end with MATCH, or stopped with an error.
+labels: [reproduction]
+body:
+  - type: dropdown
+    id: route
+    attributes:
+      label: How did you run it?
+      options:
+        - Docker (docker/pbpk.ps1 or docker/pbpk.sh)
+        - Local R + Quarto
+        - MCP server or agent skill
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command or stage
+      placeholder: "e.g. apriori, or 02_Run_Sims.qmd"
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Last lines of output
+      description: Paste the STOPPED / DIFFERENT lines and the rows above them. For Docker runs, attach the log named in the STOPPED message (under _pbpk_logs/).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Software versions
+      description: Docker users run the `versions` command. Local users give R, ospsuite, esqlabsR, rSharp and Quarto versions (ospsuite 13 is not supported).
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "e.g. Windows 11, macOS 15 (Apple Silicon), Ubuntu 24.04"
+    validations:
+      required: true
