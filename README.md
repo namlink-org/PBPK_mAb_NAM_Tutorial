@@ -16,13 +16,18 @@
 [![Data: CC BY 4.0](https://img.shields.io/badge/data-CC%20BY%204.0-lightgrey.svg?style=flat)](https://creativecommons.org/licenses/by/4.0/)
 [![NAMLink](https://img.shields.io/badge/NAMLink-namlink.org-1F6F5C.svg?style=flat)](https://namlink.org/)
 
-[Quick start](#-quick-start) · [Key results](#-key-results) · [Ways to use](#-ways-to-use-this-repository) · [Full analysis](#-run-the-complete-analysis) · [Citation](#-citation)
+[Quick start](#quick-start) · [Key results](#key-results) · [Ways to use](#ways-to-use-this-repository) · [Workflow](#workflow-at-a-glance) · [Full analysis](#run-the-complete-analysis) · [Citation](#citation)
+
+<br>
+
+| **8** IV mAbs | **5** targets | **2** species | **132** scenario-endpoints | **96 / 109** evaluable within 2-fold |
+|:---:|:---:|:---:|:---:|:---:|
 
 </div>
 
 ---
 
-## 🧬 Overview
+## Overview
 
 This repository contains an end-to-end tutorial for using physiologically based
 pharmacokinetic (PBPK) models to predict monoclonal antibody (mAb)
@@ -56,7 +61,7 @@ the performance of candidate reduced-study designs.
 
 ---
 
-## 🚀 Quick start
+## Quick start
 
 The fastest way to reproduce the a priori results is the Docker image. It
 packages R, Quarto, .NET 8 and the OSP R packages at fixed versions, so no
@@ -95,7 +100,7 @@ software versions.
 
 ---
 
-## 📊 Key results
+## Key results
 
 A priori predictions (no in vivo PK used for calibration) for eight IV mAbs,
 from `02_APriori_PBPK_Workflow/SimsOutputs/Tables/Supplement_Fold_Error_Tornado_Data.csv`.
@@ -116,9 +121,17 @@ The table has 132 rows; 23 clearance rows are not evaluable because more than
 endpoint. The study-design results are summarised under
 [`03_Study_Simulations`](#03_study_simulations).
 
+<details>
+<summary><b>Show every prediction (fold-error tornado plot, monkey and human)</b></summary>
+<br>
+
+![A priori PBPK prediction fold errors in monkeys and humans](02_APriori_PBPK_Workflow/SimsOutputs/Figures/Supplement_Fold_Error_Tornado_Monkey_Human.png)
+
+</details>
+
 ---
 
-## 🧭 Ways to use this repository
+## Ways to use this repository
 
 | You want to | Use |
 |---|---|
@@ -129,15 +142,24 @@ endpoint. The study-design results are summarised under
 
 ---
 
-## 🔬 Workflow at a glance
+## Workflow at a glance
 
-```text
- 00_Data                 01_Models                     02_APriori_PBPK_Workflow          03_Study_Simulations
- observed PK +    ──▶    PK-Sim + MoBi TMDD     ──▶    Stage 1  configure          ──▶   Stage 6  inputs and populations
- six mechanistic         compiled .pkml files          Stage 2  simulate                 Stage 7  truth simulations
- inputs per mAb                                        Stage 3  evaluate (fold error)    Stage 8  candidate designs
-                                                       Stage 4  sensitivity (optional)
-                                                       Stage 5  tornado plot (optional)
+```mermaid
+flowchart LR
+    D["<b>00_Data</b><br/>observed PK and six<br/>mechanistic inputs per mAb"]
+    M["<b>01_Models</b><br/>PK-Sim + MoBi TMDD<br/>compiled .pkml"]
+    subgraph A["02_APriori_PBPK_Workflow"]
+        direction TB
+        S1["Stage 1 · configure"] --> S2["Stage 2 · simulate"] --> S3["Stage 3 · evaluate fold errors"]
+        S2 -.-> S4["Stage 4 · sensitivity (optional)"]
+        S3 -.-> S5["Stage 5 · tornado plot (optional)"]
+    end
+    subgraph B["03_Study_Simulations"]
+        direction TB
+        S6["Stage 6 · inputs and populations"] --> S7["Stage 7 · truth simulations"] --> S8["Stage 8 · candidate designs"]
+    end
+    D --> M --> A
+    M --> B
 ```
 
 1. Collect and format observed PK data and molecule- and target-specific
@@ -155,7 +177,7 @@ endpoint. The study-design results are summarised under
 
 ---
 
-## 📁 Repository organization
+## Repository organization
 
 ```text
 PBPK_mAb_NAM_Tutorial/
@@ -243,7 +265,7 @@ generalized as universal study-design performance.
 
 ---
 
-## 🛠️ Software and installation
+## Software and installation
 
 The bundled reports and results were generated with the following versions
 (as recorded in each rendered report):
@@ -265,7 +287,7 @@ supported:** its API changes stop `02_Run_Sims.qmd` with the error "cannot add
 bindings to a locked environment". Retain the package versions recorded in
 each rendered report.
 
-For reproduction, the [Docker image](#-quick-start) is the recommended route.
+For reproduction, the [Docker image](#quick-start) is the recommended route.
 The steps below set up a native Windows installation, which is needed to edit
 the PK-Sim/MoBi projects or to run the study-design stages (6-8).
 
@@ -376,7 +398,7 @@ overwritten.
 
 ---
 
-## ⚙️ Model inputs and the PKML hand-off
+## Model inputs and the PKML hand-off
 
 Each molecule-species combination requires six mechanistic inputs. The entity
 names and units below must remain aligned between the input workbooks, the
@@ -407,7 +429,7 @@ look up these entities by exact path.
 
 ---
 
-## 🧪 Run the complete analysis
+## Run the complete analysis
 
 Run the commands from the repository root. The scripts can also locate the
 project from a subfolder, but the folder names `00_Data`, `01_Models`,
@@ -606,7 +628,7 @@ local-sensitivity and supplementary tornado-plot analyses.
 
 ---
 
-## ✅ Reproducibility and quality checks
+## Reproducibility and quality checks
 
 - Every Quarto file contains its own purpose, inputs, outputs, validation
   checks, and interpretation notes; the reports embed figures and session
@@ -626,7 +648,7 @@ local-sensitivity and supplementary tornado-plot analyses.
 
 ---
 
-## 🩺 Troubleshooting
+## Troubleshooting
 
 ### Project root not found
 
@@ -671,7 +693,7 @@ simulation workflow.
 
 ---
 
-## 🧩 Applying the workflow to another mAb
+## Applying the workflow to another mAb
 
 The following items must be supplied or reviewed explicitly:
 
@@ -729,12 +751,12 @@ instead of unsupported scientific inference.
 
 ---
 
-## 📖 Citation
+## Citation
 
 Use the **Cite this repository** button on GitHub (generated from
 [`CITATION.cff`](CITATION.cff)), and cite the accompanying publication.
 
-## ⚖️ License
+## License
 
 - **Code** (R and Quarto scripts, configuration helpers): [MIT License](LICENSE).
 - **Data, models, documentation and figures** (`00_Data/`, `01_Models/`,

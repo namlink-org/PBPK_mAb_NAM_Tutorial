@@ -78,7 +78,7 @@ longer than on Intel hardware; numerical results are identical.
 | `apriori` | Runs Stages 1, 2, 3 and 5 of the a priori workflow in sequence; stops at the first failure; refuses to reuse an existing simulation run; compares the resulting fold-error table against the committed (published) table. Stages 4, 6, 7 and 8 are not included. | 6 min |
 | `summary` | Prints within-2-fold counts by species and endpoint from the current fold-error table | seconds |
 | `compare` | Compares the current fold-error table against the committed table without re-running simulations | seconds |
-| `sensitivity` | Runs Stage 4 (local sensitivity analysis) | 15 min |
+| `sensitivity` | Runs Stage 4 (local sensitivity analysis) | 15-20 min |
 | `versions` | Prints R, Quarto, rSharp, ospsuite, esqlabsR and .NET versions inside the image | seconds |
 | `build` | Rebuilds the image explicitly (the launchers rebuild automatically when no image is found) | 15-30 min |
 | `help` | Lists available commands | seconds |

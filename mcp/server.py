@@ -138,7 +138,7 @@ _ALLOWED_COMMANDS = frozenset({"apriori", "sensitivity", "summary", "compare", "
 
 _COMMAND_DESCRIPTIONS = {
     "apriori": "Run Stages 1 → 2 → 3 → 5. Verifies fold errors against the published table. ~6 min.",
-    "sensitivity": "Run Stage 4 (local one-way sensitivity of clearance). Requires Stages 1 and 2. ~15 min.",
+    "sensitivity": "Run Stage 4 (local one-way sensitivity of clearance). Requires Stages 1 and 2. 15-20 min.",
     "summary": "Print within-2-fold counts by species and endpoint. Seconds.",
     "compare": "Compare current fold-error table against the committed table. No re-simulation. Seconds.",
     "versions": "Report R, Quarto, rSharp, ospsuite, esqlabsR and .NET versions inside the image. Seconds.",
@@ -427,7 +427,7 @@ def run_docker_command(command: str) -> dict[str, Any]:
     sensitivity Run Stage 4: one-way local sensitivity analysis of clearance
                 to target reference concentration, kint, and kdeg. Requires
                 Stages 1 and 2 to have completed first. Stage 3 is not
-                required. ~15 min.
+                required. 15-20 min.
     summary     Print within-2-fold counts by species and endpoint from the
                 current fold-error table. Seconds.
     compare     Compare the current fold-error table against the committed

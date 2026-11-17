@@ -7,7 +7,7 @@
 #   docker compose run --rm pbpk apriori      # run the full a priori workflow
 #   docker compose run --rm pbpk summary      # accuracy summary
 #   docker compose run --rm pbpk compare      # compare fold errors with published table
-#   docker compose run --rm pbpk sensitivity  # local sensitivity analysis (~15 min)
+#   docker compose run --rm pbpk sensitivity  # local sensitivity analysis (15-20 min)
 #   docker compose run --rm pbpk versions     # print software versions
 #   docker compose run --rm pbpk help         # list all commands
 #

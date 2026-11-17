@@ -346,7 +346,7 @@ class RunPipelineRequest(BaseModel):
         description=(
             "Pipeline command to run inside Docker.\n"
             "- **apriori**: Stages 1-2-3-5, then compare fold errors. ~6 min.\n"
-            "- **sensitivity**: Stage 4 one-way sensitivity analysis. ~15 min.\n"
+            "- **sensitivity**: Stage 4 one-way sensitivity analysis. 15-20 min.\n"
             "- **summary**: Print within-2-fold counts. Seconds.\n"
             "- **compare**: Compare the fold-error table against the committed one. Seconds.\n"
             "- **versions**: Report software versions inside the Docker image. Seconds.\n"
@@ -494,7 +494,7 @@ def _t_get_molecule_info(molecule: Optional[str] = None) -> dict[str, Any]:
 
 
 @_mcp.tool(name="run_docker_command",
-           description="Run a Docker pipeline command: apriori (~6 min), sensitivity (~15 min), summary, compare, "
+           description="Run a Docker pipeline command: apriori (~6 min), sensitivity (15-20 min), summary, compare, "
                        "versions, help. Only when the user asks to run the workflow; one command at a time.")
 async def _t_run_docker_command(command: str) -> dict[str, Any]:
     return await anyio.to_thread.run_sync(core.run_docker_command, command)

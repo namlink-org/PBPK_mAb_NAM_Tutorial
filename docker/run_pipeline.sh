@@ -18,7 +18,7 @@ Usage: docker run --rm -v <repo folder>:/work pbpk-mab-nam <command>
 
 Commands
   apriori      Run Part 1: Stages 1, 2, 3 and 5, then compare with the published table
-  sensitivity  Run Stage 4 (local sensitivity analysis, about 15 minutes)
+  sensitivity  Run Stage 4 (local sensitivity analysis, about 15-20 minutes)
   compare      Only compare the current fold-error table with the committed one
   summary      Print how many predictions fall within 2-fold, by species and endpoint
   versions     Print the R, Quarto and package versions in this image

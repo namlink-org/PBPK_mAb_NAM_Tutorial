@@ -275,7 +275,7 @@ The Docker image pins 12.4.2 and is not affected by this issue.
 | `apriori` | Stages 1 → 2 → 3 → 5; stops at first failure; refuses to reuse an old run; compares fold errors | ~6 min |
 | `summary` | Within-2-fold counts by species and endpoint | seconds |
 | `compare` | Compare current table with committed table only; no re-simulation | seconds |
-| `sensitivity` | Stage 4 - one-way local sensitivity | ~15 min |
+| `sensitivity` | Stage 4 - one-way local sensitivity | 15-20 min |
 | `versions` | R, Quarto, rSharp, ospsuite, esqlabsR, .NET versions inside the image | seconds |
 | `build` | Rebuild the Docker image explicitly | 15-30 min |
 | `help` | List all commands | seconds |
