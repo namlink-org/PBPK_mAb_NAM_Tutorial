@@ -320,7 +320,10 @@ Apple Silicon Macs (M1/M2/M3/M4) run via Rosetta 2; launchers pass
 
 1. Run `versions` to confirm the environment is correct.
 2. Run `apriori`. Do not interrupt. Expected duration ~6 minutes.
-3. If it prints `MATCH` - run `summary` and report the accuracy table.
+3. If it prints `MATCH` - run `summary` and report the accuracy table. A line
+   "Antibodies not in the published table" means the user added mAbs; their
+   rows are not part of `MATCH`. Report them with `get_fold_errors` or from the
+   fold-error table, and note that `summary` totals include them.
 4. If it prints `DIFFERENT` or `STOPPED` - quote the exact output and the log
    path under `_pbpk_logs/`. Do not attempt to fix scientific inputs.
 5. After a successful `apriori` run, outputs are:
@@ -560,7 +563,8 @@ retains scientific responsibility for every value and decision.
 
 4. **Add data to the input files (preserve exact schema from §5):**
    - New rows in `mAb_data.csv` (monkey) and/or `mAb_data_human.csv`
-   - New worksheet(s) or rows in `Parameters.xlsx` and `Parameters_human.xlsx`
+   - New rows in the `Included` sheet of `Parameters.xlsx` and `Parameters_human.xlsx`
+     (same molecule name as in the data files)
    - Confirm the Route label is in the recognised list (§6)
    - Confirm Molecular.Weight is in g/mol and matches the Parameters workbook
 
@@ -568,10 +572,14 @@ retains scientific responsibility for every value and decision.
    Do not rename existing PKML entity names - any rename must also update every
    R script that references that entity path.
 
-6. **Update `ProjectConfiguration.xlsx`** to include the new molecule's PKML
-   path. Run Stage 1 to regenerate configuration workbooks, then run Stages 2
-   and 3. Inspect the HTML report for warnings, missing-profile indicators, and
-   AUCinf extrapolation fractions before interpreting fold errors.
+6. **Map the target to its PKML.** Molecules are linked to a PKML through
+   their `Target Name`. For one of the five existing targets nothing needs to
+   change. For a new target, add one row per species to `target_model_files`
+   in `01_Setup_Configurations.qmd`. Then run `apriori` (Stages 1, 2, 3 and 5).
+   The comparison still checks the eight published mAbs and lists the new mAb
+   separately, since it has no published values. Inspect the HTML report for
+   warnings, missing-profile indicators, and AUCinf extrapolation fractions
+   before interpreting its fold errors.
 
 **LLM-appropriate tasks during adaptation:**
 - Extract candidate parameter values from user-supplied papers into a structured

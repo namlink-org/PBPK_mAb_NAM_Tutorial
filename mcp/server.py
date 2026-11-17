@@ -981,7 +981,11 @@ def get_molecule_info(molecule: Optional[str] = None) -> dict[str, Any]:
             key = str(molecule).strip().lower()
             candidates = [m for m in _MOLECULES if key and key in m.lower()]
             return {
-                "error": f"Molecule {str(molecule)[:80]!r} is not in this repository.",
+                "error": (
+                    f"No reference information for {str(molecule)[:80]!r}. Reference "
+                    "information covers the eight published antibodies only. For an "
+                    "antibody you added to the data, use get_fold_errors(molecule=...)."
+                ),
                 "available_molecules": sorted(_MOLECULES),
                 "did_you_mean": candidates or None,
             }

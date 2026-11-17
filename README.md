@@ -718,6 +718,16 @@ The following items must be supplied or reviewed explicitly:
    uncertainty centers, variability hierarchy, dose grid, sampling grid, and
    reference assumptions. These settings must be reviewed and changed together.
 
+For a new mAb against one of the five existing targets, the a priori workflow
+(Stages 1-5, including the Docker `apriori` command) needs no code changes: add
+the new rows to `00_Data/Monkey/mAb_data.csv`, `00_Data/Human/mAb_data_human.csv`
+and the `Included` sheet of both parameter workbooks, using the same molecule name
+everywhere. The human Route must state the infusion duration (for example
+`IV 1hr Infusion`). The Docker comparison still checks the eight published mAbs
+and lists the added mAb separately, because it has no published values to
+compare with. Its predictions and fold errors appear in the Stage 3 report and
+the fold-error table.
+
 ### Appropriate uses of an LLM
 
 A large language model can accelerate the adaptation while the modeler retains

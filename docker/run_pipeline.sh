@@ -59,6 +59,9 @@ committed <- tryCatch(
 current <- read.csv(file.path(repo, path))
 if (is.null(committed)) { cat("No committed table to compare with.\n"); quit(status = 2) }
 key <- c("Species", "Metric", "Molecule", "Dose_mg_kg")
+# Antibodies added by the user have no published values; report them separately.
+added <- current[!current$Molecule %in% committed$Molecule, ]
+current <- current[current$Molecule %in% committed$Molecule, ]
 m <- merge(committed, current, by = key, suffixes = c(".pub", ".new"), all = TRUE)
 same_status <- identical(m$Evaluation_status.pub, m$Evaluation_status.new)
 num <- !is.na(m$Fold_error.pub) | !is.na(m$Fold_error.new)
@@ -66,6 +69,10 @@ rel <- abs(m$Fold_error.new - m$Fold_error.pub) / abs(m$Fold_error.pub)
 bad <- num & (is.na(rel) | rel > 1e-3)
 cat(sprintf("Rows: published %d, new %d. Values differing by more than 0.1%%: %d\n",
             nrow(committed), nrow(current), sum(bad)))
+if (nrow(added) > 0) {
+  cat(sprintf("Antibodies not in the published table (%d rows, nothing to compare with): %s\n",
+              nrow(added), paste(sort(unique(added$Molecule)), collapse = ", ")))
+}
 if (nrow(committed) == nrow(current) && same_status && !any(bad)) {
   cat("MATCH: all fold errors reproduce the published results.\n")
 } else {
